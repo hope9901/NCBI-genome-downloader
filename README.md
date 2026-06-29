@@ -54,12 +54,18 @@ cd fungi-genome-downloader
 
 ### 3. 환경 변수 및 디렉토리 설정 (선택 사항)
 본 프로그램은 기본적으로 사용자 홈 디렉토리 하위의 `~/fungi_project` 폴더에 데이터를 적재하도록 설정되어 있습니다. 
-만약 저장 경로를 커스텀하고 싶다면 환경 변수 `FUNGI_PROJECT_ROOT`를 설정하거나 `.env` 파일에 기록하여 구동할 수 있습니다.
+만약 저장 경로를 커스텀하거나 다중 코어 CPU(예: 40코어 서버 등) 환경에서 **병렬 다운로드 성능**을 올리고 싶다면 `.env` 파일에 관련 환경 변수를 기록해 줍니다.
 
 ```bash
-# .env 파일 생성 예시 (필요시 수정)
-echo 'FUNGI_PROJECT_ROOT="/var/data/fungi_project"' > .env
+# .env 파일 생성 및 병렬 작업자 수 설정 예시
+cat <<EOF > .env
+FUNGI_PROJECT_ROOT="/data/HYG/fungi_project"
+FUNGI_PARALLEL_WORKERS=10  # 병렬로 실행할 다운로드 스레드 개수 (기본값: 4)
+NCBI_API_DELAY=0.5        # 다운로드 간 API 호출 지연시간 (초)
+EOF
 ```
+> [!WARNING]
+> NCBI 서버는 동일 IP로부터 지나치게 많은 동시 요청이 들어오면 일시적으로 IP 차단(Temporary IP Ban)을 적용합니다. 40코어 서버더라도 안전을 위해 `FUNGI_PARALLEL_WORKERS` 값은 **최대 10~15개 이하**로 지정하시는 것을 권장합니다.
 
 ### 4. 최초 수동 실행 테스트
 파이프라인을 수동 실행하여 Fungi 메타데이터 동기화 및 최초 유전체 다운로드가 정상 작동하는지 확인합니다.
