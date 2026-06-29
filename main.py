@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import shutil
 from datetime import datetime
 import config
 from db_manager import JsonDbManager
@@ -15,14 +16,14 @@ def setup_logging(log_path):
     logger = logging.getLogger("fungi_pipeline")
     logger.setLevel(logging.DEBUG)
 
-    # File Handler (Write all debug logs)
+    # File Handler
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # Console Handler (Show info logs to user)
+    # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] - %(message)s')
@@ -102,7 +103,6 @@ def generate_overview_report(db_manager, overview_path):
 
     for acc, info in sorted(records.items()):
         org_name = info.get("organism_name", "")
-        # Abbreviate long organism names for the text table representation
         if len(org_name) > 28:
             org_name = org_name[:25] + "..."
         
@@ -160,15 +160,14 @@ def run_pipeline():
     unique_tax_ids = list(set(item.get("tax_id") for item in metadata_list if item.get("tax_id")))
     logger.info(f"Identified {len(unique_tax_ids)} unique TaxIDs to resolve.")
 
-    # Fetch taxonomy for each TaxID (uses client internal cache)
     tax_info_map = {}
     for idx, tax_id in enumerate(unique_tax_ids, 1):
         print(f"Resolving taxonomy {idx}/{len(unique_tax_ids)} (ID: {tax_id})...", end="\r")
         lineage = ncbi_client.fetch_taxonomy_lineage(tax_id)
         tax_info_map[tax_id] = lineage
-    print() # Clear return carriage
+    print()
 
-    # Map taxonomy info back to the metadata list
+    # Map taxonomy info back to metadata list
     for item in metadata_list:
         tax_id = item.get("tax_id")
         if tax_id and tax_id in tax_info_map:
@@ -179,12 +178,11 @@ def run_pipeline():
             item["family"] = lineage.get("family")
             item["genus"] = lineage.get("genus")
 
-    # Upsert to JSON Database
     new_records_count = db_manager.upsert_genomes(metadata_list)
     print(f"Synchronized metadata. Added {new_records_count} new genomes.")
 
     # ======================================================================
-    # Phase 2: Incremental Download & Structuring
+    # Phase 2: Incremental Download & Structuring (with MD5 retries)
     # ======================================================================
     pending_items = db_manager.get_pending_accessions()
     logger.info(f"Found {len(pending_items)} accessions pending download.")
@@ -192,7 +190,6 @@ def run_pipeline():
 
     if not pending_items:
         logger.info("No new genomes to download. Pipeline completed successfully.")
-        # Regenerate overview in case metadata changed
         generate_overview_report(db_manager, config.OVERVIEW_PATH)
         return
 
@@ -214,55 +211,72 @@ def run_pipeline():
         logger.info(f"Processing ({idx}/{len(pending_items)}): {accession} -> {folder_name}")
         print(f"[{idx}/{len(pending_items)}] Downloading {accession} ({info.get('organism_name')})...")
 
-        zip_path = None
-        try:
-            # 1. Download zip package
-            zip_path = ncbi_client.download_genome_package(accession, config.TMP_DIR)
-            
-            # 2. Extract and organize files (Atomic transfer of downloaded files only)
-            file_presence = ncbi_client.extract_and_organize(
-                accession, zip_path, temp_extract_dir, final_dest_dir, folder_name
-            )
+        # Retry loop encompassing: Download ➔ Extraction ➔ MD5 Checksum Verification
+        success = False
+        last_error = ""
 
-            # 3. Create symlinks for existing files
-            ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
-
-            # 4. Update Database
-            db_manager.update_download_status(
-                accession, "completed",
-                has_fna=file_presence["has_fna"],
-                has_gff=file_presence["has_gff"],
-                has_cds=file_presence["has_cds"],
-                has_faa=file_presence["has_faa"]
-            )
-            success_count += 1
-
-        except Exception as e:
-            error_msg = str(e)
-            logger.error(f"Failed pipeline operation for {accession}: {error_msg}")
-            db_manager.update_download_status(accession, "failed", error_log=error_msg)
-            failure_count += 1
-            
-            # Cleanup final dest in case of partial failed move to keep it clean
-            if os.path.exists(final_dest_dir) and not os.listdir(final_dest_dir):
-                try:
-                    os.rmdir(final_dest_dir)
-                except OSError:
-                    pass
-        finally:
-            # General cleanup of zip file and temporary extraction directory
-            if zip_path and os.path.exists(zip_path):
-                try:
-                    os.remove(zip_path)
-                except OSError:
-                    pass
-            if os.path.exists(temp_extract_dir):
-                try:
+        for attempt in range(1, config.MAX_RETRIES + 1):
+            zip_path = None
+            try:
+                # Pre-clean leftover directories from previous failed attempts
+                if os.path.exists(temp_extract_dir):
                     shutil.rmtree(temp_extract_dir)
-                except OSError:
-                    pass
+                if os.path.exists(final_dest_dir):
+                    shutil.rmtree(final_dest_dir)
 
-        # Periodically regenerate the overview report to show real-time progress
+                # 1. Download zip package
+                zip_path = ncbi_client.download_genome_package(accession, config.TMP_DIR)
+                
+                # 2. Extract and organize files (Includes MD5 Checksum Verification)
+                file_presence = ncbi_client.extract_and_organize(
+                    accession, zip_path, temp_extract_dir, final_dest_dir, folder_name
+                )
+
+                # 3. Create symlinks for existing files
+                ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
+
+                # 4. Update Database
+                db_manager.update_download_status(
+                    accession, "completed",
+                    has_fna=file_presence["has_fna"],
+                    has_gff=file_presence["has_gff"],
+                    has_cds=file_presence["has_cds"],
+                    has_faa=file_presence["has_faa"]
+                )
+                success_count += 1
+                success = True
+                logger.info(f"Successfully processed {accession} on attempt {attempt}")
+                break  # Successful, exit retry loop
+
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Attempt {attempt}/{config.MAX_RETRIES} failed for {accession}: {last_error}")
+                
+                # Delete any partially downloaded/extracted files on failure to ensure clean slate
+                if os.path.exists(final_dest_dir):
+                    try:
+                        shutil.rmtree(final_dest_dir)
+                    except OSError:
+                        pass
+            finally:
+                # Clean up zip and temp extract dir for the next attempt or final cleanup
+                if zip_path and os.path.exists(zip_path):
+                    try:
+                        os.remove(zip_path)
+                    except OSError:
+                        pass
+                if os.path.exists(temp_extract_dir):
+                    try:
+                        shutil.rmtree(temp_extract_dir)
+                    except OSError:
+                        pass
+
+        if not success:
+            logger.error(f"Failed pipeline operation for {accession} after {config.MAX_RETRIES} attempts. Last Error: {last_error}")
+            db_manager.update_download_status(accession, "failed", error_log=last_error)
+            failure_count += 1
+
+        # Periodically regenerate report
         if idx % 10 == 0 or idx == len(pending_items):
             generate_overview_report(db_manager, config.OVERVIEW_PATH)
 
