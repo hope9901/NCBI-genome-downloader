@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import shutil
+import concurrent.futures
 from datetime import datetime
 import config
 from db_manager import JsonDbManager
@@ -131,6 +132,75 @@ def generate_overview_report(db_manager, overview_path):
     except Exception as e:
         logger.error(f"Failed to write overview report: {e}")
 
+def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
+    """
+    Core download worker logic: Downloads, extracts, validates MD5, reorganizes files, 
+    creates symbolic links, and updates JSON DB. Run concurrently in ThreadPoolExecutor.
+    """
+    folder_name = info.get("folder_name")
+    final_dest_dir = os.path.join(config.ALL_GENOMES_DIR, folder_name)
+    temp_extract_dir = os.path.join(config.TMP_DIR, f"{accession}_extracted")
+
+    logger.info(f"Processing ({idx}/{total_count}): {accession} -> {folder_name}")
+    print(f"[{idx}/{total_count}] Starting download: {accession} ({info.get('organism_name')})...")
+
+    zip_path = None
+    try:
+        # Pre-clean leftover directories from previous failed attempts
+        if os.path.exists(temp_extract_dir):
+            shutil.rmtree(temp_extract_dir)
+        if os.path.exists(final_dest_dir):
+            shutil.rmtree(final_dest_dir)
+
+        # 1. Download zip package
+        zip_path = ncbi_client.download_genome_package(accession, config.TMP_DIR)
+        
+        # 2. Extract and organize files (Includes MD5 Checksum Verification)
+        file_presence = ncbi_client.extract_and_organize(
+            accession, zip_path, temp_extract_dir, final_dest_dir, folder_name
+        )
+
+        # 3. Create symlinks for existing files
+        ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
+
+        # 4. Update Database (Thread-safe)
+        db_manager.update_download_status(
+            accession, "completed",
+            has_fna=file_presence["has_fna"],
+            has_gff=file_presence["has_gff"],
+            has_cds=file_presence["has_cds"],
+            has_faa=file_presence["has_faa"]
+        )
+        logger.info(f"Successfully processed {accession}")
+        print(f"[{idx}/{total_count}] Successfully downloaded and verified: {accession}")
+        return True, accession, None
+
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Failed pipeline operation for {accession}: {error_msg}")
+        db_manager.update_download_status(accession, "failed", error_log=error_msg)
+        
+        # Delete any partially downloaded/extracted files on failure to ensure clean slate
+        if os.path.exists(final_dest_dir):
+            try:
+                shutil.rmtree(final_dest_dir)
+            except OSError:
+                pass
+        print(f"[{idx}/{total_count}] Failed download: {accession}. Error: {error_msg}")
+        return False, accession, error_msg
+    finally:
+        # Clean up zip and temp extract dir
+        if zip_path and os.path.exists(zip_path):
+            try:
+                os.remove(zip_path)
+            except OSError:
+                pass
+        if os.path.exists(temp_extract_dir):
+            try:
+                shutil.rmtree(temp_extract_dir)
+            except OSError:
+                pass
+
 def run_pipeline():
     logger.info("Starting Fungi Genome Auto-Download Pipeline...")
     config.init_directories()
@@ -153,7 +223,6 @@ def run_pipeline():
         logger.critical(f"Failed to synchronize metadata from NCBI: {e}")
         return
 
-    # Query taxonomy lineages for all distinct TaxIDs
     logger.info("Resolving taxonomic lineages (Phylum/Class/Order...)")
     print("Resolving taxonomic lineages for retrieved genomes...")
     
@@ -182,11 +251,11 @@ def run_pipeline():
     print(f"Synchronized metadata. Added {new_records_count} new genomes.")
 
     # ======================================================================
-    # Phase 2: Incremental Download & Structuring (with MD5 retries)
+    # Phase 2: Concurrent Multi-Threaded Download & Structuring
     # ======================================================================
     pending_items = db_manager.get_pending_accessions()
-    logger.info(f"Found {len(pending_items)} accessions pending download.")
-    print(f"Found {len(pending_items)} accessions to download.")
+    logger.info(f"Found {len(pending_items)} accessions pending download. Using {config.PARALLEL_WORKERS} parallel workers.")
+    print(f"Found {len(pending_items)} accessions to download. Running with {config.PARALLEL_WORKERS} parallel threads...")
 
     if not pending_items:
         logger.info("No new genomes to download. Pipeline completed successfully.")
@@ -202,83 +271,34 @@ def run_pipeline():
 
     success_count = 0
     failure_count = 0
+    total_items = len(pending_items)
 
-    for idx, (accession, info) in enumerate(pending_items, 1):
-        folder_name = info.get("folder_name")
-        final_dest_dir = os.path.join(config.ALL_GENOMES_DIR, folder_name)
-        temp_extract_dir = os.path.join(config.TMP_DIR, f"{accession}_extracted")
+    # Execute download workers in a thread pool for concurrency
+    with concurrent.futures.ThreadPoolExecutor(max_workers=config.PARALLEL_WORKERS) as executor:
+        # Submit all tasks
+        futures = {
+            executor.submit(
+                process_single_genome, idx, total_items, accession, info, db_manager, ncbi_client, type_dirs
+            ): accession 
+            for idx, (accession, info) in enumerate(pending_items, 1)
+        }
 
-        logger.info(f"Processing ({idx}/{len(pending_items)}): {accession} -> {folder_name}")
-        print(f"[{idx}/{len(pending_items)}] Downloading {accession} ({info.get('organism_name')})...")
-
-        # Retry loop encompassing: Download ➔ Extraction ➔ MD5 Checksum Verification
-        success = False
-        last_error = ""
-
-        for attempt in range(1, config.MAX_RETRIES + 1):
-            zip_path = None
+        # Monitor progress as futures complete
+        for idx, fut in enumerate(concurrent.futures.as_completed(futures), 1):
+            accession = futures[fut]
             try:
-                # Pre-clean leftover directories from previous failed attempts
-                if os.path.exists(temp_extract_dir):
-                    shutil.rmtree(temp_extract_dir)
-                if os.path.exists(final_dest_dir):
-                    shutil.rmtree(final_dest_dir)
+                success, acc, err = fut.result()
+                if success:
+                    success_count += 1
+                else:
+                    failure_count += 1
+            except Exception as exc:
+                logger.error(f"Thread execution generated an exception for {accession}: {exc}")
+                failure_count += 1
 
-                # 1. Download zip package
-                zip_path = ncbi_client.download_genome_package(accession, config.TMP_DIR)
-                
-                # 2. Extract and organize files (Includes MD5 Checksum Verification)
-                file_presence = ncbi_client.extract_and_organize(
-                    accession, zip_path, temp_extract_dir, final_dest_dir, folder_name
-                )
-
-                # 3. Create symlinks for existing files
-                ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
-
-                # 4. Update Database
-                db_manager.update_download_status(
-                    accession, "completed",
-                    has_fna=file_presence["has_fna"],
-                    has_gff=file_presence["has_gff"],
-                    has_cds=file_presence["has_cds"],
-                    has_faa=file_presence["has_faa"]
-                )
-                success_count += 1
-                success = True
-                logger.info(f"Successfully processed {accession} on attempt {attempt}")
-                break  # Successful, exit retry loop
-
-            except Exception as e:
-                last_error = str(e)
-                logger.warning(f"Attempt {attempt}/{config.MAX_RETRIES} failed for {accession}: {last_error}")
-                
-                # Delete any partially downloaded/extracted files on failure to ensure clean slate
-                if os.path.exists(final_dest_dir):
-                    try:
-                        shutil.rmtree(final_dest_dir)
-                    except OSError:
-                        pass
-            finally:
-                # Clean up zip and temp extract dir for the next attempt or final cleanup
-                if zip_path and os.path.exists(zip_path):
-                    try:
-                        os.remove(zip_path)
-                    except OSError:
-                        pass
-                if os.path.exists(temp_extract_dir):
-                    try:
-                        shutil.rmtree(temp_extract_dir)
-                    except OSError:
-                        pass
-
-        if not success:
-            logger.error(f"Failed pipeline operation for {accession} after {config.MAX_RETRIES} attempts. Last Error: {last_error}")
-            db_manager.update_download_status(accession, "failed", error_log=last_error)
-            failure_count += 1
-
-        # Periodically regenerate report
-        if idx % 10 == 0 or idx == len(pending_items):
-            generate_overview_report(db_manager, config.OVERVIEW_PATH)
+            # Update the overview report periodically
+            if idx % 10 == 0 or idx == total_items:
+                generate_overview_report(db_manager, config.OVERVIEW_PATH)
 
     logger.info(f"Pipeline download phase complete. Success: {success_count}, Failures: {failure_count}")
     print(f"Pipeline complete. Successfully downloaded: {success_count}, Failed: {failure_count}")
