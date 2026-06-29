@@ -88,12 +88,17 @@ class JsonDbManager:
                         existing["ncbi"] = {
                             "download_status": item.get("download_status", "pending"),
                             "downloaded_at": item.get("downloaded_at"),
+                            "has_annotation": item.get("has_annotation", 0),  # Mark whether NCBI provided annotations originally
                             "has_fna": item.get("has_fna", 0),
                             "has_gff": item.get("has_gff", 0),
                             "has_cds": item.get("has_cds", 0),
                             "has_faa": item.get("has_faa", 0),
                             "error_log": item.get("error_log")
                         }
+                    else:
+                        # Make sure has_annotation is present in existing ncbi record
+                        existing["ncbi"]["has_annotation"] = item.get("has_annotation", existing["ncbi"].get("has_annotation", 0))
+
                     if "custom" not in existing:
                         existing["custom"] = {
                             "annotation_status": "pending",
@@ -120,6 +125,7 @@ class JsonDbManager:
                         "ncbi": {
                             "download_status": "pending",
                             "downloaded_at": None,
+                            "has_annotation": item.get("has_annotation", 0),  # Track NCBI annotation availability
                             "has_fna": 0,
                             "has_gff": 0,
                             "has_cds": 0,

@@ -61,16 +61,16 @@ class NcbiDatasetsClient:
 
     def fetch_fungal_metadata(self):
         """
-        Executes 'datasets summary genome taxon Fungi --annotated --as-json-lines'
-        to retrieve all annotated fungal genomes. Handles multiple version/formatting layouts.
+        Executes 'datasets summary genome taxon Fungi --as-json-lines'
+        to retrieve all fungal genomes (both annotated and unannotated).
         """
         if not self.check_cli_installed():
             raise RuntimeError("NCBI Datasets CLI is not installed or not in PATH.")
 
-        # Query using the verified "Fungi" taxon name instead of numeric ID to ensure full support
-        cmd = [self.datasets_bin, "summary", "genome", "taxon", "Fungi", "--annotated", "--as-json-lines"]
+        # Removed '--annotated' to fetch ALL fungi genomes, including those without annotation
+        cmd = [self.datasets_bin, "summary", "genome", "taxon", "Fungi", "--as-json-lines"]
         logger.info("Fetching Fungi genome metadata from NCBI...")
-        print("Fetching Fungi genome metadata from NCBI (Taxon Fungi, annotated)...")
+        print("Fetching Fungi genome metadata from NCBI (Taxon Fungi, ALL genomes)...")
 
         try:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
@@ -90,7 +90,6 @@ class NcbiDatasetsClient:
                     logger.warning(f"Error record found in metadata summary: {record['error']}")
                     continue
 
-                # Robust parser: Supports both {"reports": [...]} wrapper format AND raw line-by-line {"accession": ...} format
                 if "reports" in record:
                     reports = record.get("reports", [])
                 elif "accession" in record:
@@ -116,6 +115,10 @@ class NcbiDatasetsClient:
                     
                     assembly_level = assembly_info.get("assemblyLevel", "unspecified")
                     
+                    # Track native annotation availability from NCBI
+                    # If annotation_info exists, NCBI has native annotations.
+                    has_annotation = 1 if report.get("annotation_info") or report.get("annotationInfo") else 0
+                    
                     san_org = sanitize_name(org_name)
                     san_strain = sanitize_name(strain)
                     san_level = sanitize_name(assembly_level)
@@ -135,6 +138,7 @@ class NcbiDatasetsClient:
                         "assembly_level": assembly_level,
                         "folder_name": folder_name,
                         "tax_id": tax_id,
+                        "has_annotation": has_annotation,
                         "phylum": None,
                         "class": None,
                         "order": None,
@@ -173,7 +177,6 @@ class NcbiDatasetsClient:
             tax_record = json.loads(lines[0])
             reports = tax_record.get("reports", [])
             if not reports:
-                # Fallback check if streaming object is directly resolved
                 if "taxonomy" in tax_record:
                     reports = [tax_record]
                 else:

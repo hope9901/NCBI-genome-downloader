@@ -37,6 +37,7 @@ def generate_overview_report(db_manager, overview_path):
     """
     Reads the database and generates a structured overview text report
     summarizing both NCBI source files and Custom annotation states.
+    Now tracks and reports genomes that had no NCBI annotation natively.
     """
     records = db_manager.get_all_records()
     
@@ -44,6 +45,7 @@ def generate_overview_report(db_manager, overview_path):
     ncbi_completed = 0
     ncbi_failed = 0
     ncbi_pending = 0
+    ncbi_unannotated_total = 0  # Count of genomes without native NCBI annotations
     
     custom_completed = 0
     custom_failed = 0
@@ -63,6 +65,9 @@ def generate_overview_report(db_manager, overview_path):
             ncbi_failed += 1
         else:
             ncbi_pending += 1
+
+        if not ncbi.get("has_annotation"):
+            ncbi_unannotated_total += 1
 
         # Custom pipeline statistics
         custom_status = custom.get("annotation_status", "pending")
@@ -94,15 +99,16 @@ def generate_overview_report(db_manager, overview_path):
     # Format Overview Report
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
-    lines.append("======================================================================")
+    lines.append("==========================================================================================")
     lines.append(f"Fungi Genome Download & Annotation Overview (Updated: {now_str})")
-    lines.append("======================================================================\n")
+    lines.append("==========================================================================================\n")
 
     lines.append("[NCBI Source Download Statistics]")
-    lines.append(f"  - Total Genomes Registered  : {total_count}")
-    lines.append(f"  - Completed NCBI Downloads  : {ncbi_completed}")
-    lines.append(f"  - Failed NCBI Downloads     : {ncbi_failed}")
-    lines.append(f"  - Pending NCBI Downloads    : {ncbi_pending}\n")
+    lines.append(f"  - Total Genomes Registered     : {total_count}")
+    lines.append(f"  - Completed NCBI Downloads     : {ncbi_completed}")
+    lines.append(f"  - Failed NCBI Downloads        : {ncbi_failed}")
+    lines.append(f"  - Pending NCBI Downloads       : {ncbi_pending}")
+    lines.append(f"  - Genomes Without NCBI Ann     : {ncbi_unannotated_total}  (Target for Custom Annotation)\n")
 
     lines.append("[Custom Pipeline Re-annotation Statistics]")
     lines.append(f"  - Completed Custom Annotations : {custom_completed}")
@@ -117,7 +123,7 @@ def generate_overview_report(db_manager, overview_path):
     lines.append("\n")
 
     lines.append("[Detailed Status Table]")
-    header = f"{'Accession':<18} | {'Organism Name':<28} | {'NCBI Status':<12} | FNA GFF CDS FAA | {'Custom Status':<13} | GFF CDS FAA"
+    header = f"{'Accession':<18} | {'Organism Name':<28} | {'NCBI Status':<12} | NCBI Ann | FNA GFF CDS FAA | {'Custom Status':<13} | GFF CDS FAA"
     lines.append(header)
     lines.append("-" * len(header))
 
@@ -130,6 +136,8 @@ def generate_overview_report(db_manager, overview_path):
         custom = info.get("custom", {})
 
         ncbi_status = ncbi.get("download_status", "pending")
+        ncbi_ann = "Y" if ncbi.get("has_annotation") else "N"
+        
         fna = "Y" if ncbi.get("has_fna") else "N"
         gff = "Y" if ncbi.get("has_gff") else "N"
         cds = "Y" if ncbi.get("has_cds") else "N"
@@ -140,7 +148,7 @@ def generate_overview_report(db_manager, overview_path):
         c_cds = "Y" if custom.get("has_cds") else "N"
         c_faa = "Y" if custom.get("has_faa") else "N"
 
-        row = f"{acc:<18} | {org_name:<28} | {ncbi_status:<12} |  {fna}   {gff}   {cds}   {faa}  | {custom_status:<13} |  {c_gff}   {c_cds}   {c_faa}"
+        row = f"{acc:<18} | {org_name:<28} | {ncbi_status:<12} |    {ncbi_ann}     |  {fna}   {gff}   {cds}   {faa}  | {custom_status:<13} |  {c_gff}   {c_cds}   {c_faa}"
         lines.append(row)
 
     report_content = "\n".join(lines)
@@ -154,8 +162,7 @@ def generate_overview_report(db_manager, overview_path):
 
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
-    Downloads, extracts, validates MD5, reorganizes files into 'ncbi' subfolder,
-    and updates JSON DB. Lazy-loads taxonomy lineage only when processing.
+    Downloads, extracts, validates MD5, reorganizes files, and updates JSON DB.
     """
     folder_name = info.get("folder_name")
     tax_id = info.get("tax_id")
@@ -165,8 +172,6 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
     logger.info(f"Processing ({idx}/{total_count}): {accession} -> {folder_name}")
     print(f"[{idx}/{total_count}] Starting download: {accession} ({info.get('organism_name')})...")
 
-    # --- Lazy-Loading Taxonomy Lineage ---
-    # Fetch lineage metadata dynamically for this specific genome if not already resolved
     if not info.get("phylum") and tax_id:
         try:
             logger.debug(f"Lazy-loading taxonomy metadata for TaxID {tax_id}...")
@@ -251,16 +256,14 @@ def run_pipeline():
         return
 
     # ======================================================================
-    # Phase 1: Metadata Sync (Instant Upsert, Lazy Taxonomy)
+    # Phase 1: Metadata Sync (Instant Sync for ALL Fungi assemblies)
     # ======================================================================
     try:
-        # Rapidly sync metadata skeleton (No heavy real-time API loop for thousands of TaxIDs)
         metadata_list = ncbi_client.fetch_fungal_metadata()
     except Exception as e:
         logger.critical(f"Failed to synchronize metadata from NCBI: {e}")
         return
 
-    # Synchronize skeleton details instantly to local JSON DB
     new_records_count = db_manager.upsert_genomes(metadata_list)
     print(f"Synchronized metadata. Added {new_records_count} new genomes.")
 
@@ -276,7 +279,6 @@ def run_pipeline():
         generate_overview_report(db_manager, config.OVERVIEW_PATH)
         return
 
-    # Map symlinks under type-specific ncbi subfolders
     type_dirs = {
         "fna": config.FNA_NCBI_DIR,
         "gff": config.GFF_NCBI_DIR,
@@ -314,7 +316,6 @@ def run_pipeline():
     logger.info(f"Pipeline download phase complete. Success: {success_count}, Failures: {failure_count}")
     print(f"Pipeline complete. Successfully downloaded: {success_count}, Failed: {failure_count}")
 
-    # Final overview report generation
     generate_overview_report(db_manager, config.OVERVIEW_PATH)
 
 if __name__ == "__main__":
