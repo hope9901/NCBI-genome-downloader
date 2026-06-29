@@ -162,13 +162,11 @@ def generate_overview_report(db_manager, overview_path):
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
     Downloads, extracts, validates MD5, reorganizes files.
-    Optimized for GenBank/RefSeq (GCA/GCF) pairs: if a paired assembly is already completed,
-    it creates a directory symlink instead of downloading duplicate data.
+    Both GCA and GCF pairs are downloaded physically and independently to preserve potential
+    differences in annotation coordinates/identifiers, while paired relationships are tracked in the DB.
     """
     folder_name = info.get("folder_name")
     tax_id = info.get("tax_id")
-    paired_acc = info.get("paired_accession")
-    
     final_dest_dir = os.path.join(config.ALL_GENOMES_DIR, folder_name)
     temp_extract_dir = os.path.join(config.TMP_DIR, f"{accession}_extracted")
 
@@ -191,94 +189,6 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
                 )
         except Exception as texc:
             logger.warning(f"Failed to lazy-load taxonomy for {accession} (TaxID: {tax_id}): {texc}")
-
-    # Check GCA/GCF paired assembly relationship to avoid duplicate downloads
-    if paired_acc:
-        partner_record = db_manager.get_genome(paired_acc)
-        if partner_record:
-            partner_ncbi = partner_record.get("ncbi", {})
-            partner_folder = partner_record.get("folder_name")
-            partner_dest_dir = os.path.join(config.ALL_GENOMES_DIR, partner_folder)
-            
-            # If the partner assembly is already completed and exists on disk
-            if partner_ncbi.get("download_status") == "completed" and os.path.exists(partner_dest_dir):
-                logger.info(f"Accession {accession} has completed partner {paired_acc}. Generating symlink to save space.")
-                print(f"[{idx}/{total_count}] Linking partner: {accession} ➔ {paired_acc} (skipping duplicate download)")
-
-                if os.path.exists(final_dest_dir) or os.path.islink(final_dest_dir):
-                    try:
-                        if os.path.islink(final_dest_dir):
-                            os.remove(final_dest_dir)
-                        else:
-                            shutil.rmtree(final_dest_dir)
-                    except OSError:
-                        pass
-
-                # Create directory symlink to partner directory
-                try:
-                    rel_partner_path = os.path.relpath(partner_dest_dir, os.path.dirname(final_dest_dir))
-                    os.symlink(rel_partner_path, final_dest_dir)
-                    logger.debug(f"Linked directory {final_dest_dir} ➔ {rel_partner_path}")
-                except OSError as sym_err:
-                    logger.warning(f"Failed to create directory symlink: {sym_err}. Falling back to copy metadata files.")
-                    # Fallback copy if symlinks are restricted
-                    os.makedirs(final_dest_dir, exist_ok=True)
-                    ncbi_sub = os.path.join(final_dest_dir, "ncbi")
-                    shutil.copytree(os.path.join(partner_dest_dir, "ncbi"), ncbi_sub, dirs_exist_ok=True)
-                    os.makedirs(os.path.join(final_dest_dir, "custom"), exist_ok=True)
-
-                # Create quick-lookup symlinks for files under type dirs
-                # GCA/GCF filenames inside paired directories will reflect partner's folder name
-                partner_ncbi_dir = os.path.join(partner_dest_dir, "ncbi")
-                file_mapping = {
-                    "fna": f"{partner_folder}_genomic.fna",
-                    "gff": f"{partner_folder}_genomic.gff",
-                    "cds": f"{partner_folder}_cds.fna",
-                    "faa": f"{partner_folder}_protein.faa"
-                }
-
-                for f_key, f_name in file_mapping.items():
-                    src_file = os.path.join(partner_ncbi_dir, f_name)
-                    if not os.path.exists(src_file):
-                        continue
-                    
-                    target_dir = type_dirs.get(f_key)
-                    if not target_dir:
-                        continue
-                    
-                    link_name = f"{accession}.{f_key}"
-                    link_path = os.path.join(target_dir, link_name)
-                    
-                    try:
-                        rel_file_path = os.path.relpath(src_file, target_dir)
-                    except ValueError:
-                        rel_file_path = src_file
-                        
-                    if os.path.exists(link_path) or os.path.islink(link_path):
-                        try:
-                            os.remove(link_path)
-                        except OSError:
-                            pass
-                            
-                    try:
-                        os.symlink(rel_file_path, link_path)
-                    except OSError:
-                        if sys.platform.startswith("win"):
-                            try:
-                                shutil.copy(src_file, link_path)
-                            except Exception:
-                                pass
-
-                # Update database status reflecting partner's files
-                db_manager.update_ncbi_status(
-                    accession, "completed",
-                    has_fna=partner_ncbi.get("has_fna", 0),
-                    has_gff=partner_ncbi.get("has_gff", 0),
-                    has_cds=partner_ncbi.get("has_cds", 0),
-                    has_faa=partner_ncbi.get("has_faa", 0),
-                    error_log=f"Linked to paired assembly {paired_acc}"
-                )
-                return True, accession, None
 
     zip_path = None
     try:
@@ -316,7 +226,7 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
         db_manager.update_ncbi_status(accession, "failed", error_log=error_msg)
         
         ncbi_path = os.path.join(final_dest_dir, "ncbi")
-        if os.path.exists(ncbi_path) and not os.path.islink(final_dest_dir):
+        if os.path.exists(ncbi_path):
             try:
                 shutil.rmtree(ncbi_path)
             except OSError:
@@ -363,9 +273,9 @@ def run_pipeline():
     # Phase 2: Concurrent Multi-Threaded Download & Structuring
     # ======================================================================
     pending_items = db_manager.get_pending_accessions()
-    logger.info(f"Found {len(pending_items)} accessions pending download. Using {config.PARALLEWorkers} parallel workers." if hasattr(config, "PARALLEWorkers") else f"Found {len(pending_items)} accessions pending download.")
     
     workers = config.PARALLEL_WORKERS if hasattr(config, "PARALLEL_WORKERS") else 4
+    logger.info(f"Found {len(pending_items)} accessions pending download. Using {workers} parallel workers.")
     print(f"Found {len(pending_items)} accessions to download. Running with {workers} parallel threads...")
 
     if not pending_items:
