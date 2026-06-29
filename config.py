@@ -1,7 +1,11 @@
 import os
 
+# --- Smart .env Loader (Using Python Standard Libraries) ---
 def load_env_file():
-    """Manually parses the .env file if it exists."""
+    """
+    Manually parses the .env file if it exists in the project directory,
+    and sets them as environment variables without requiring external libraries.
+    """
     env_path = os.path.join(os.path.dirname(__file__), ".env")
     if os.path.exists(env_path):
         try:
@@ -18,13 +22,23 @@ def load_env_file():
         except Exception as e:
             print(f"[WARNING] Failed to load .env file dynamically: {e}")
 
+# Load .env variables first
 load_env_file()
+
+# --- Dynamic PATH Resolution for datasets CLI ---
+# If a custom NCBI datasets directory path is provided in .env, prepends it to system PATH.
+# This ensures that both direct execution and Cron schedules can locate the datasets CLI.
+CUSTOM_DATASETS_PATH = os.getenv("NCBI_DATASETS_PATH")
+if CUSTOM_DATASETS_PATH:
+    # Use pathsep to ensure multi-OS compatibility (colon on Unix, semicolon on Windows)
+    os.environ["PATH"] = f"{CUSTOM_DATASETS_PATH}{os.pathsep}{os.environ.get('PATH', '')}"
 
 # Base directory setup
 DEFAULT_PROJECT_ROOT = os.path.expanduser(os.path.join("~", "fungi_project"))
 PROJECT_ROOT = os.getenv("FUNGI_PROJECT_ROOT", DEFAULT_PROJECT_ROOT)
 BASE_DIR = os.path.join(PROJECT_ROOT, "data", "fungi")
 
+# Subdirectories
 ALL_GENOMES_DIR = os.path.join(BASE_DIR, "all_genomes")
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "tmp")
 
@@ -74,3 +88,4 @@ if __name__ == "__main__":
     init_directories()
     print("Project Root:", PROJECT_ROOT)
     print("Parallel Workers:", PARALLEL_WORKERS)
+    print("System PATH (with custom NCBI link if set):", os.environ.get("PATH"))

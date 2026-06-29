@@ -60,6 +60,7 @@ cd fungi-genome-downloader
 # .env 파일 생성 및 병렬 작업자 수 설정 예시
 cat <<EOF > .env
 FUNGI_PROJECT_ROOT="/data/HYG/fungi_project"
+NCBI_DATASETS_PATH="/home/programs/ncbi_datasets"  # datasets CLI가 설치된 폴더 경로 (Cron 실행 시 필수)
 FUNGI_PARALLEL_WORKERS=10  # 병렬로 실행할 다운로드 스레드 개수 (기본값: 4)
 NCBI_API_DELAY=0.5        # 다운로드 간 API 호출 지연시간 (초)
 EOF
