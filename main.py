@@ -35,7 +35,7 @@ logger = setup_logging(config.LOG_PATH)
 
 def generate_overview_report(db_manager, overview_path):
     """
-    Reads the database and generates an overview text report
+    Reads the database and generates a structured overview text report
     summarizing both NCBI source files and Custom annotation states.
     """
     records = db_manager.get_all_records()
@@ -155,14 +155,33 @@ def generate_overview_report(db_manager, overview_path):
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
     Downloads, extracts, validates MD5, reorganizes files into 'ncbi' subfolder,
-    and updates JSON DB under the 'ncbi' sub-category.
+    and updates JSON DB. Lazy-loads taxonomy lineage only when processing.
     """
     folder_name = info.get("folder_name")
+    tax_id = info.get("tax_id")
     final_dest_dir = os.path.join(config.ALL_GENOMES_DIR, folder_name)
     temp_extract_dir = os.path.join(config.TMP_DIR, f"{accession}_extracted")
 
     logger.info(f"Processing ({idx}/{total_count}): {accession} -> {folder_name}")
     print(f"[{idx}/{total_count}] Starting download: {accession} ({info.get('organism_name')})...")
+
+    # --- Lazy-Loading Taxonomy Lineage ---
+    # Fetch lineage metadata dynamically for this specific genome if not already resolved
+    if not info.get("phylum") and tax_id:
+        try:
+            logger.debug(f"Lazy-loading taxonomy metadata for TaxID {tax_id}...")
+            lineage = ncbi_client.fetch_taxonomy_lineage(tax_id)
+            if lineage:
+                db_manager.update_taxonomy_info(
+                    accession,
+                    phylum=lineage.get("phylum"),
+                    klass=lineage.get("class"),
+                    order=lineage.get("order"),
+                    family=lineage.get("family"),
+                    genus=lineage.get("genus")
+                )
+        except Exception as texc:
+            logger.warning(f"Failed to lazy-load taxonomy for {accession} (TaxID: {tax_id}): {texc}")
 
     zip_path = None
     try:
@@ -232,43 +251,21 @@ def run_pipeline():
         return
 
     # ======================================================================
-    # Phase 1: Metadata Sync & Taxonomy Lineage Collection
+    # Phase 1: Metadata Sync (Instant Upsert, Lazy Taxonomy)
     # ======================================================================
     try:
+        # Rapidly sync metadata skeleton (No heavy real-time API loop for thousands of TaxIDs)
         metadata_list = ncbi_client.fetch_fungal_metadata()
     except Exception as e:
         logger.critical(f"Failed to synchronize metadata from NCBI: {e}")
         return
 
-    logger.info("Resolving taxonomic lineages (Phylum/Class/Order...)")
-    print("Resolving taxonomic lineages for retrieved genomes...")
-    
-    unique_tax_ids = list(set(item.get("tax_id") for item in metadata_list if item.get("tax_id")))
-    logger.info(f"Identified {len(unique_tax_ids)} unique TaxIDs to resolve.")
-
-    tax_info_map = {}
-    for idx, tax_id in enumerate(unique_tax_ids, 1):
-        print(f"Resolving taxonomy {idx}/{len(unique_tax_ids)} (ID: {tax_id})...", end="\r")
-        lineage = ncbi_client.fetch_taxonomy_lineage(tax_id)
-        tax_info_map[tax_id] = lineage
-    print()
-
-    # Map taxonomy info back to metadata list
-    for item in metadata_list:
-        tax_id = item.get("tax_id")
-        if tax_id and tax_id in tax_info_map:
-            lineage = tax_info_map[tax_id]
-            item["phylum"] = lineage.get("phylum")
-            item["class"] = lineage.get("class")
-            item["order"] = lineage.get("order")
-            item["family"] = lineage.get("family")
-            item["genus"] = lineage.get("genus")
-
+    # Synchronize skeleton details instantly to local JSON DB
     new_records_count = db_manager.upsert_genomes(metadata_list)
     print(f"Synchronized metadata. Added {new_records_count} new genomes.")
 
     # ======================================================================
-    # Phase 2: Concurrent Multi-Threaded Download & Structuring (NCBI Only)
+    # Phase 2: Concurrent Multi-Threaded Download & Structuring
     # ======================================================================
     pending_items = db_manager.get_pending_accessions()
     logger.info(f"Found {len(pending_items)} accessions pending download. Using {config.PARALLEL_WORKERS} parallel workers.")

@@ -83,13 +83,7 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level", existing.get("assembly_level")),
                         "folder_name": item.get("folder_name", existing.get("folder_name")),
                         "tax_id": item.get("tax_id", existing.get("tax_id")),
-                        "phylum": item.get("phylum", existing.get("phylum")),
-                        "class": item.get("class", existing.get("class")),
-                        "order": item.get("order", existing.get("order")),
-                        "family": item.get("family", existing.get("family")),
-                        "genus": item.get("genus", existing.get("genus")),
                     })
-                    # Backward compatibility block in case legacy DB structure existed
                     if "ncbi" not in existing:
                         existing["ncbi"] = {
                             "download_status": item.get("download_status", "pending"),
@@ -118,12 +112,11 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level"),
                         "folder_name": item.get("folder_name"),
                         "tax_id": item.get("tax_id"),
-                        "phylum": item.get("phylum"),
-                        "class": item.get("class"),
-                        "order": item.get("order"),
-                        "family": item.get("family"),
-                        "genus": item.get("genus"),
-                        # NCBI Source Download Substructure
+                        "phylum": None,
+                        "class": None,
+                        "order": None,
+                        "family": None,
+                        "genus": None,
                         "ncbi": {
                             "download_status": "pending",
                             "downloaded_at": None,
@@ -133,7 +126,6 @@ class JsonDbManager:
                             "has_faa": 0,
                             "error_log": None
                         },
-                        # Custom pipeline Annotation Substructure
                         "custom": {
                             "annotation_status": "pending",
                             "annotated_at": None,
@@ -159,8 +151,6 @@ class JsonDbManager:
                 return False
 
             record = data[accession]
-            
-            # Legacy safeguard
             if "ncbi" not in record:
                 record["ncbi"] = {}
 
@@ -191,7 +181,6 @@ class JsonDbManager:
                 return False
 
             record = data[accession]
-            
             if "custom" not in record:
                 record["custom"] = {}
 
@@ -213,8 +202,26 @@ class JsonDbManager:
             logger.info(f"Updated Custom annotation status for {accession} to {status} (GFF:{has_gff})")
             return True
 
+    def update_taxonomy_info(self, accession, phylum, klass, order, family, genus):
+        """Updates taxonomic lineage fields for a specific accession. Thread-safe."""
+        with self.lock:
+            data = self._load_unlocked()
+            if accession not in data:
+                return False
+            
+            record = data[accession]
+            record["phylum"] = phylum
+            record["class"] = klass
+            record["order"] = order
+            record["family"] = family
+            record["genus"] = genus
+            
+            self._save_unlocked(data)
+            logger.debug(f"Updated taxonomy lineage for {accession}: Phylum={phylum}, Class={klass}")
+            return True
+
     def get_pending_accessions(self):
-        """Retrieve list of accessions needing downloading (based on ncbi.download_status)."""
+        """Retrieve list of accessions needing downloading."""
         with self.lock:
             data = self._load_unlocked()
             pending = []
@@ -232,7 +239,6 @@ class JsonDbManager:
             for accession, info in data.items():
                 ncbi = info.get("ncbi", {})
                 custom = info.get("custom", {})
-                # We can only annotate if we successfully downloaded the assembly (fna)
                 if ncbi.get("download_status") == "completed" and ncbi.get("has_fna") == 1:
                     if custom.get("annotation_status") in ("pending", "failed"):
                         pending.append((accession, info))
