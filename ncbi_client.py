@@ -63,11 +63,11 @@ class NcbiDatasetsClient:
         """
         Executes 'datasets summary genome taxon Fungi --as-json-lines'
         to retrieve all fungal genomes (both annotated and unannotated).
+        Extracts GCA/GCF pairing relationships.
         """
         if not self.check_cli_installed():
             raise RuntimeError("NCBI Datasets CLI is not installed or not in PATH.")
 
-        # Removed '--annotated' to fetch ALL fungi genomes, including those without annotation
         cmd = [self.datasets_bin, "summary", "genome", "taxon", "Fungi", "--as-json-lines"]
         logger.info("Fetching Fungi genome metadata from NCBI...")
         print("Fetching Fungi genome metadata from NCBI (Taxon Fungi, ALL genomes)...")
@@ -115,8 +115,11 @@ class NcbiDatasetsClient:
                     
                     assembly_level = assembly_info.get("assemblyLevel", "unspecified")
                     
-                    # Track native annotation availability from NCBI
-                    # If annotation_info exists, NCBI has native annotations.
+                    # Extract pairing information (GCA <--> GCF partner accession)
+                    paired_accession = assembly_info.get("pairedAssemblyAccession")
+                    if paired_accession:
+                        paired_accession = paired_accession.strip()
+
                     has_annotation = 1 if report.get("annotation_info") or report.get("annotationInfo") else 0
                     
                     san_org = sanitize_name(org_name)
@@ -139,6 +142,7 @@ class NcbiDatasetsClient:
                         "folder_name": folder_name,
                         "tax_id": tax_id,
                         "has_annotation": has_annotation,
+                        "paired_accession": paired_accession,  # Store GCA/GCF pairing relationship
                         "phylum": None,
                         "class": None,
                         "order": None,

@@ -1,23 +1,10 @@
 #!/bin/bash
-# run_pipeline.sh - Wrapper script for execution via Linux cron daemon.
-# This wrapper ensures environment paths are resolved properly under minimal cron contexts.
 
-# Resolve the absolute path of this script's directory
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+# Navigate to the directory where this script is located
+cd "$(dirname "$0")"
 
-# 1. Extend PATH to include common CLI search paths (datasets, python3, conda, local bins)
-export PATH=$PATH:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/$USER/.local/bin:/home/$USER/miniconda3/bin:/home/$USER/anaconda3/bin
+# Set PATH explicitly to include commonly used locations AND the custom NCBI Datasets CLI path
+export PATH="/home/programs/ncbi_datasets:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
-# 2. Set explicit environment variable for project root
-export FUNGI_PROJECT_ROOT="$SCRIPT_DIR"
-
-# 3. Optional: Activate python virtual environment if you configure one in the directory
-# if [ -f "$SCRIPT_DIR/venv/bin/activate" ]; then
-#     source "$SCRIPT_DIR/venv/bin/activate"
-# fi
-
-# 4. Execute the pipeline Python script and redirect standard output/error to a execution log
-echo "=== Running Fungi Genome Pipeline: $(date) ===" >> "$SCRIPT_DIR/cron_run.log"
-python3 "$SCRIPT_DIR/main.py" >> "$SCRIPT_DIR/cron_run.log" 2>&1
-
-echo "=== Pipeline Execution Finished: $(date) ===" >> "$SCRIPT_DIR/cron_run.log"
+# Run the pipeline and log outputs
+python3 main.py >> cron_execution.log 2>&1

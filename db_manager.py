@@ -83,12 +83,13 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level", existing.get("assembly_level")),
                         "folder_name": item.get("folder_name", existing.get("folder_name")),
                         "tax_id": item.get("tax_id", existing.get("tax_id")),
+                        "paired_accession": item.get("paired_accession", existing.get("paired_accession")),
                     })
                     if "ncbi" not in existing:
                         existing["ncbi"] = {
                             "download_status": item.get("download_status", "pending"),
                             "downloaded_at": item.get("downloaded_at"),
-                            "has_annotation": item.get("has_annotation", 0),  # Mark whether NCBI provided annotations originally
+                            "has_annotation": item.get("has_annotation", 0),
                             "has_fna": item.get("has_fna", 0),
                             "has_gff": item.get("has_gff", 0),
                             "has_cds": item.get("has_cds", 0),
@@ -96,7 +97,6 @@ class JsonDbManager:
                             "error_log": item.get("error_log")
                         }
                     else:
-                        # Make sure has_annotation is present in existing ncbi record
                         existing["ncbi"]["has_annotation"] = item.get("has_annotation", existing["ncbi"].get("has_annotation", 0))
 
                     if "custom" not in existing:
@@ -117,6 +117,7 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level"),
                         "folder_name": item.get("folder_name"),
                         "tax_id": item.get("tax_id"),
+                        "paired_accession": item.get("paired_accession"),  # Set GCA/GCF partner
                         "phylum": None,
                         "class": None,
                         "order": None,
@@ -125,7 +126,7 @@ class JsonDbManager:
                         "ncbi": {
                             "download_status": "pending",
                             "downloaded_at": None,
-                            "has_annotation": item.get("has_annotation", 0),  # Track NCBI annotation availability
+                            "has_annotation": item.get("has_annotation", 0),
                             "has_fna": 0,
                             "has_gff": 0,
                             "has_cds": 0,
