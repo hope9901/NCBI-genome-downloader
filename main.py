@@ -17,14 +17,12 @@ def setup_logging(log_path):
     logger = logging.getLogger("fungi_pipeline")
     logger.setLevel(logging.DEBUG)
 
-    # File Handler
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s')
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 
-    # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_formatter = logging.Formatter('%(asctime)s [%(levelname)s] - %(message)s')
@@ -37,27 +35,43 @@ logger = setup_logging(config.LOG_PATH)
 
 def generate_overview_report(db_manager, overview_path):
     """
-    Reads the database and generates a structured overview text report
-    with taxonomic lineage summaries and a detailed download status table.
+    Reads the database and generates an overview text report
+    summarizing both NCBI source files and Custom annotation states.
     """
     records = db_manager.get_all_records()
     
     total_count = len(records)
-    completed_count = 0
-    failed_count = 0
-    pending_count = 0
+    ncbi_completed = 0
+    ncbi_failed = 0
+    ncbi_pending = 0
+    
+    custom_completed = 0
+    custom_failed = 0
+    custom_pending = 0
 
-    # Hierarchical taxonomic summary structure: Phylum -> Class -> [completed, total]
     tax_summary = {}
 
     for acc, info in records.items():
-        status = info.get("download_status")
-        if status == "completed":
-            completed_count += 1
-        elif status == "failed":
-            failed_count += 1
+        ncbi = info.get("ncbi", {})
+        custom = info.get("custom", {})
+        
+        # NCBI statistics
+        ncbi_status = ncbi.get("download_status", "pending")
+        if ncbi_status == "completed":
+            ncbi_completed += 1
+        elif ncbi_status == "failed":
+            ncbi_failed += 1
         else:
-            pending_count += 1
+            ncbi_pending += 1
+
+        # Custom pipeline statistics
+        custom_status = custom.get("annotation_status", "pending")
+        if custom_status == "completed":
+            custom_completed += 1
+        elif custom_status == "failed":
+            custom_failed += 1
+        else:
+            custom_pending += 1
 
         phylum = info.get("phylum") or "Unknown_Phylum"
         klass = info.get("class") or "Unknown_Class"
@@ -66,7 +80,7 @@ def generate_overview_report(db_manager, overview_path):
             tax_summary[phylum] = {"total": 0, "completed": 0, "classes": {}}
         
         tax_summary[phylum]["total"] += 1
-        if status == "completed":
+        if ncbi_status == "completed":
             tax_summary[phylum]["completed"] += 1
 
         classes_dict = tax_summary[phylum]["classes"]
@@ -74,21 +88,26 @@ def generate_overview_report(db_manager, overview_path):
             classes_dict[klass] = {"total": 0, "completed": 0}
         
         classes_dict[klass]["total"] += 1
-        if status == "completed":
+        if ncbi_status == "completed":
             classes_dict[klass]["completed"] += 1
 
     # Format Overview Report
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     lines.append("======================================================================")
-    lines.append(f"Fungi Genome Download Overview (Updated: {now_str})")
+    lines.append(f"Fungi Genome Download & Annotation Overview (Updated: {now_str})")
     lines.append("======================================================================\n")
 
-    lines.append("[Total Download Statistics]")
-    lines.append(f"  - Total Fungal Genomes Registered : {total_count}")
-    lines.append(f"  - Completed Downloads            : {completed_count}")
-    lines.append(f"  - Failed Downloads               : {failed_count}")
-    lines.append(f"  - Pending/Queue Downloads        : {pending_count}\n")
+    lines.append("[NCBI Source Download Statistics]")
+    lines.append(f"  - Total Genomes Registered  : {total_count}")
+    lines.append(f"  - Completed NCBI Downloads  : {ncbi_completed}")
+    lines.append(f"  - Failed NCBI Downloads     : {ncbi_failed}")
+    lines.append(f"  - Pending NCBI Downloads    : {ncbi_pending}\n")
+
+    lines.append("[Custom Pipeline Re-annotation Statistics]")
+    lines.append(f"  - Completed Custom Annotations : {custom_completed}")
+    lines.append(f"  - Failed Custom Annotations    : {custom_failed}")
+    lines.append(f"  - Pending Custom Annotations   : {custom_pending}\n")
 
     lines.append("[Taxonomy Summary (Phylum ➔ Class) [Completed / Total]]")
     for phylum, p_stats in sorted(tax_summary.items()):
@@ -97,34 +116,35 @@ def generate_overview_report(db_manager, overview_path):
             lines.append(f"    * {klass} [{c_stats['completed']} / {c_stats['total']}]")
     lines.append("\n")
 
-    lines.append("[Detailed Download Status Table]")
-    header = f"{'Accession':<18} | {'Organism Name':<30} | {'Phylum':<15} | {'Class':<15} | FNA | GFF | CDS | FAA | {'Status':<10}"
+    lines.append("[Detailed Status Table]")
+    header = f"{'Accession':<18} | {'Organism Name':<28} | {'NCBI Status':<12} | FNA GFF CDS FAA | {'Custom Status':<13} | GFF CDS FAA"
     lines.append(header)
     lines.append("-" * len(header))
 
     for acc, info in sorted(records.items()):
         org_name = info.get("organism_name", "")
-        if len(org_name) > 28:
-            org_name = org_name[:25] + "..."
+        if len(org_name) > 26:
+            org_name = org_name[:23] + "..."
         
-        phylum = info.get("phylum") or "Unknown"
-        if len(phylum) > 13: phylum = phylum[:12] + "."
-            
-        klass = info.get("class") or "Unknown"
-        if len(klass) > 13: klass = klass[:12] + "."
+        ncbi = info.get("ncbi", {})
+        custom = info.get("custom", {})
 
-        fna = "Y" if info.get("has_fna") else "N"
-        gff = "Y" if info.get("has_gff") else "N"
-        cds = "Y" if info.get("has_cds") else "N"
-        faa = "Y" if info.get("has_faa") else "N"
-        status = info.get("download_status", "pending")
+        ncbi_status = ncbi.get("download_status", "pending")
+        fna = "Y" if ncbi.get("has_fna") else "N"
+        gff = "Y" if ncbi.get("has_gff") else "N"
+        cds = "Y" if ncbi.get("has_cds") else "N"
+        faa = "Y" if ncbi.get("has_faa") else "N"
 
-        row = f"{acc:<18} | {org_name:<30} | {phylum:<15} | {klass:<15} |  {fna}  |  {gff}  |  {cds}  |  {faa}  | {status:<10}"
+        custom_status = custom.get("annotation_status", "pending")
+        c_gff = "Y" if custom.get("has_gff") else "N"
+        c_cds = "Y" if custom.get("has_cds") else "N"
+        c_faa = "Y" if custom.get("has_faa") else "N"
+
+        row = f"{acc:<18} | {org_name:<28} | {ncbi_status:<12} |  {fna}   {gff}   {cds}   {faa}  | {custom_status:<13} |  {c_gff}   {c_cds}   {c_faa}"
         lines.append(row)
 
     report_content = "\n".join(lines)
     
-    # Save report
     try:
         with open(overview_path, "w", encoding="utf-8") as f:
             f.write(report_content)
@@ -134,8 +154,8 @@ def generate_overview_report(db_manager, overview_path):
 
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
-    Core download worker logic: Downloads, extracts, validates MD5, reorganizes files, 
-    creates symbolic links, and updates JSON DB. Run concurrently in ThreadPoolExecutor.
+    Downloads, extracts, validates MD5, reorganizes files into 'ncbi' subfolder,
+    and updates JSON DB under the 'ncbi' sub-category.
     """
     folder_name = info.get("folder_name")
     final_dest_dir = os.path.join(config.ALL_GENOMES_DIR, folder_name)
@@ -146,25 +166,24 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
 
     zip_path = None
     try:
-        # Pre-clean leftover directories from previous failed attempts
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
-        if os.path.exists(final_dest_dir):
-            shutil.rmtree(final_dest_dir)
+        if os.path.exists(os.path.join(final_dest_dir, "ncbi")):
+            shutil.rmtree(os.path.join(final_dest_dir, "ncbi"))
 
         # 1. Download zip package
         zip_path = ncbi_client.download_genome_package(accession, config.TMP_DIR)
         
-        # 2. Extract and organize files (Includes MD5 Checksum Verification)
+        # 2. Extract and organize files under 'final_dest_dir/ncbi/'
         file_presence = ncbi_client.extract_and_organize(
             accession, zip_path, temp_extract_dir, final_dest_dir, folder_name
         )
 
-        # 3. Create symlinks for existing files
+        # 3. Create symlinks pointing to final_dest_dir/ncbi/
         ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
 
-        # 4. Update Database (Thread-safe)
-        db_manager.update_download_status(
+        # 4. Update Database (Thread-safe NCBI status update)
+        db_manager.update_ncbi_status(
             accession, "completed",
             has_fna=file_presence["has_fna"],
             has_gff=file_presence["has_gff"],
@@ -178,18 +197,17 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Failed pipeline operation for {accession}: {error_msg}")
-        db_manager.update_download_status(accession, "failed", error_log=error_msg)
+        db_manager.update_ncbi_status(accession, "failed", error_log=error_msg)
         
-        # Delete any partially downloaded/extracted files on failure to ensure clean slate
-        if os.path.exists(final_dest_dir):
+        ncbi_path = os.path.join(final_dest_dir, "ncbi")
+        if os.path.exists(ncbi_path):
             try:
-                shutil.rmtree(final_dest_dir)
+                shutil.rmtree(ncbi_path)
             except OSError:
                 pass
         print(f"[{idx}/{total_count}] Failed download: {accession}. Error: {error_msg}")
         return False, accession, error_msg
     finally:
-        # Clean up zip and temp extract dir
         if zip_path and os.path.exists(zip_path):
             try:
                 os.remove(zip_path)
@@ -205,7 +223,6 @@ def run_pipeline():
     logger.info("Starting Fungi Genome Auto-Download Pipeline...")
     config.init_directories()
 
-    # Instantiate managers
     db_manager = JsonDbManager(config.DB_PATH)
     ncbi_client = NcbiDatasetsClient(api_delay=config.API_DELAY, max_retries=config.MAX_RETRIES)
 
@@ -251,7 +268,7 @@ def run_pipeline():
     print(f"Synchronized metadata. Added {new_records_count} new genomes.")
 
     # ======================================================================
-    # Phase 2: Concurrent Multi-Threaded Download & Structuring
+    # Phase 2: Concurrent Multi-Threaded Download & Structuring (NCBI Only)
     # ======================================================================
     pending_items = db_manager.get_pending_accessions()
     logger.info(f"Found {len(pending_items)} accessions pending download. Using {config.PARALLEL_WORKERS} parallel workers.")
@@ -262,20 +279,19 @@ def run_pipeline():
         generate_overview_report(db_manager, config.OVERVIEW_PATH)
         return
 
+    # Map symlinks under type-specific ncbi subfolders
     type_dirs = {
-        "fna": config.FNA_DIR,
-        "gff": config.GFF_DIR,
-        "cds": config.CDS_DIR,
-        "faa": config.FAA_DIR
+        "fna": config.FNA_NCBI_DIR,
+        "gff": config.GFF_NCBI_DIR,
+        "cds": config.CDS_NCBI_DIR,
+        "faa": config.FAA_NCBI_DIR
     }
 
     success_count = 0
     failure_count = 0
     total_items = len(pending_items)
 
-    # Execute download workers in a thread pool for concurrency
     with concurrent.futures.ThreadPoolExecutor(max_workers=config.PARALLEL_WORKERS) as executor:
-        # Submit all tasks
         futures = {
             executor.submit(
                 process_single_genome, idx, total_items, accession, info, db_manager, ncbi_client, type_dirs
@@ -283,7 +299,6 @@ def run_pipeline():
             for idx, (accession, info) in enumerate(pending_items, 1)
         }
 
-        # Monitor progress as futures complete
         for idx, fut in enumerate(concurrent.futures.as_completed(futures), 1):
             accession = futures[fut]
             try:
@@ -296,7 +311,6 @@ def run_pipeline():
                 logger.error(f"Thread execution generated an exception for {accession}: {exc}")
                 failure_count += 1
 
-            # Update the overview report periodically
             if idx % 10 == 0 or idx == total_items:
                 generate_overview_report(db_manager, config.OVERVIEW_PATH)
 

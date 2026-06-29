@@ -9,7 +9,7 @@ logger = logging.getLogger("fungi_pipeline")
 class JsonDbManager:
     def __init__(self, db_path):
         self.db_path = db_path
-        self.lock = threading.Lock()  # Ensure thread-safety for concurrent writes
+        self.lock = threading.Lock()
         self._init_db()
 
     def _init_db(self):
@@ -63,7 +63,7 @@ class JsonDbManager:
     def upsert_genomes(self, metadata_list):
         """
         Inserts new genomes from a list of metadata dictionaries.
-        Thread-safe write operation.
+        Keeps download and annotation statuses intact for existing entries.
         """
         with self.lock:
             data = self._load_unlocked()
@@ -89,6 +89,27 @@ class JsonDbManager:
                         "family": item.get("family", existing.get("family")),
                         "genus": item.get("genus", existing.get("genus")),
                     })
+                    # Backward compatibility block in case legacy DB structure existed
+                    if "ncbi" not in existing:
+                        existing["ncbi"] = {
+                            "download_status": item.get("download_status", "pending"),
+                            "downloaded_at": item.get("downloaded_at"),
+                            "has_fna": item.get("has_fna", 0),
+                            "has_gff": item.get("has_gff", 0),
+                            "has_cds": item.get("has_cds", 0),
+                            "has_faa": item.get("has_faa", 0),
+                            "error_log": item.get("error_log")
+                        }
+                    if "custom" not in existing:
+                        existing["custom"] = {
+                            "annotation_status": "pending",
+                            "annotated_at": None,
+                            "has_gff": 0,
+                            "has_cds": 0,
+                            "has_faa": 0,
+                            "pipeline_version": None,
+                            "error_log": None
+                        }
                     updated_count += 1
                 else:
                     data[accession] = {
@@ -102,13 +123,26 @@ class JsonDbManager:
                         "order": item.get("order"),
                         "family": item.get("family"),
                         "genus": item.get("genus"),
-                        "download_status": "pending",
-                        "has_fna": 0,
-                        "has_gff": 0,
-                        "has_cds": 0,
-                        "has_faa": 0,
-                        "downloaded_at": None,
-                        "error_log": None
+                        # NCBI Source Download Substructure
+                        "ncbi": {
+                            "download_status": "pending",
+                            "downloaded_at": None,
+                            "has_fna": 0,
+                            "has_gff": 0,
+                            "has_cds": 0,
+                            "has_faa": 0,
+                            "error_log": None
+                        },
+                        # Custom pipeline Annotation Substructure
+                        "custom": {
+                            "annotation_status": "pending",
+                            "annotated_at": None,
+                            "has_gff": 0,
+                            "has_cds": 0,
+                            "has_faa": 0,
+                            "pipeline_version": None,
+                            "error_log": None
+                        }
                     }
                     new_count += 1
 
@@ -116,38 +150,90 @@ class JsonDbManager:
             logger.info(f"Database sync complete. New: {new_count}, Updated: {updated_count}")
             return new_count
 
-    def update_download_status(self, accession, status, has_fna=0, has_gff=0, has_cds=0, has_faa=0, error_log=None):
-        """Update download status and file presence metrics. Thread-safe."""
+    def update_ncbi_status(self, accession, status, has_fna=0, has_gff=0, has_cds=0, has_faa=0, error_log=None):
+        """Update NCBI source download status. Thread-safe."""
         with self.lock:
             data = self._load_unlocked()
             if accession not in data:
-                logger.warning(f"Attempted to update status for non-existent accession: {accession}")
+                logger.warning(f"Attempted to update NCBI status for non-existent accession: {accession}")
                 return False
 
             record = data[accession]
-            record["download_status"] = status
-            record["has_fna"] = int(has_fna)
-            record["has_gff"] = int(has_gff)
-            record["has_cds"] = int(has_cds)
-            record["has_faa"] = int(has_faa)
+            
+            # Legacy safeguard
+            if "ncbi" not in record:
+                record["ncbi"] = {}
+
+            ncbi = record["ncbi"]
+            ncbi["download_status"] = status
+            ncbi["has_fna"] = int(has_fna)
+            ncbi["has_gff"] = int(has_gff)
+            ncbi["has_cds"] = int(has_cds)
+            ncbi["has_faa"] = int(has_faa)
             
             if status == "completed":
-                record["downloaded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                record["error_log"] = None
+                ncbi["downloaded_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                ncbi["error_log"] = None
             else:
-                record["downloaded_at"] = None
-                record["error_log"] = error_log
+                ncbi["downloaded_at"] = None
+                ncbi["error_log"] = error_log
 
             self._save_unlocked(data)
-            logger.debug(f"Updated status for {accession} to {status} (FNA:{has_fna}, GFF:{has_gff})")
+            logger.debug(f"Updated NCBI status for {accession} to {status}")
+            return True
+
+    def update_custom_status(self, accession, status, has_gff=0, has_cds=0, has_faa=0, pipeline_version=None, error_log=None):
+        """Update custom re-annotation status. Thread-safe."""
+        with self.lock:
+            data = self._load_unlocked()
+            if accession not in data:
+                logger.warning(f"Attempted to update custom annotation status for non-existent accession: {accession}")
+                return False
+
+            record = data[accession]
+            
+            if "custom" not in record:
+                record["custom"] = {}
+
+            custom = record["custom"]
+            custom["annotation_status"] = status
+            custom["has_gff"] = int(has_gff)
+            custom["has_cds"] = int(has_cds)
+            custom["has_faa"] = int(has_faa)
+            custom["pipeline_version"] = pipeline_version
+            
+            if status == "completed":
+                custom["annotated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                custom["error_log"] = None
+            else:
+                custom["annotated_at"] = None
+                custom["error_log"] = error_log
+
+            self._save_unlocked(data)
+            logger.info(f"Updated Custom annotation status for {accession} to {status} (GFF:{has_gff})")
             return True
 
     def get_pending_accessions(self):
-        """Retrieve list of pending accessions. Thread-safe."""
+        """Retrieve list of accessions needing downloading (based on ncbi.download_status)."""
         with self.lock:
             data = self._load_unlocked()
             pending = []
             for accession, info in data.items():
-                if info.get("download_status") in ("pending", "failed"):
+                ncbi = info.get("ncbi", {})
+                if ncbi.get("download_status") in ("pending", "failed"):
                     pending.append((accession, info))
+            return pending
+
+    def get_pending_custom_annotations(self):
+        """Retrieve list of successfully downloaded genomes that are pending custom re-annotation."""
+        with self.lock:
+            data = self._load_unlocked()
+            pending = []
+            for accession, info in data.items():
+                ncbi = info.get("ncbi", {})
+                custom = info.get("custom", {})
+                # We can only annotate if we successfully downloaded the assembly (fna)
+                if ncbi.get("download_status") == "completed" and ncbi.get("has_fna") == 1:
+                    if custom.get("annotation_status") in ("pending", "failed"):
+                        pending.append((accession, info))
             return pending
