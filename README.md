@@ -43,17 +43,6 @@ datasets --version
 dataformat --version
 ```
 
-**macOS (Apple Silicon / Intel) 설치 명령어:**
-```bash
-# macOS용 datasets 및 dataformat CLI 다운로드
-curl -o datasets 'https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/mac/datasets'
-curl -o dataformat 'https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/mac/dataformat'
-
-# 실행 권한 부여 및 시스템 PATH 경로로 이동
-chmod +x datasets dataformat
-sudo mv datasets dataformat /usr/local/bin/
-```
-
 ### 2. 저장소 복사 (Git Clone)
 이 레포지토리를 다른 리눅스 서버의 작업 디렉토리에 클론합니다.
 
