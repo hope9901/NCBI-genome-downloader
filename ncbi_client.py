@@ -61,15 +61,16 @@ class NcbiDatasetsClient:
 
     def fetch_fungal_metadata(self):
         """
-        Executes 'datasets summary genome taxon 4751 --annotated --as-json-lines'
-        to retrieve all annotated fungal genomes. Returns a parsed list of metadata dicts.
+        Executes 'datasets summary genome taxon Fungi --annotated --as-json-lines'
+        to retrieve all annotated fungal genomes. Handles multiple version/formatting layouts.
         """
         if not self.check_cli_installed():
             raise RuntimeError("NCBI Datasets CLI is not installed or not in PATH.")
 
-        cmd = [self.datasets_bin, "summary", "genome", "taxon", "4751", "--annotated", "--as-json-lines"]
+        # Query using the verified "Fungi" taxon name instead of numeric ID to ensure full support
+        cmd = [self.datasets_bin, "summary", "genome", "taxon", "Fungi", "--annotated", "--as-json-lines"]
         logger.info("Fetching Fungi genome metadata from NCBI...")
-        print("Fetching Fungi genome metadata from NCBI (Taxon 4751, annotated)...")
+        print("Fetching Fungi genome metadata from NCBI (Taxon Fungi, annotated)...")
 
         try:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
@@ -89,7 +90,14 @@ class NcbiDatasetsClient:
                     logger.warning(f"Error record found in metadata summary: {record['error']}")
                     continue
 
-                reports = record.get("reports", [])
+                # Robust parser: Supports both {"reports": [...]} wrapper format AND raw line-by-line {"accession": ...} format
+                if "reports" in record:
+                    reports = record.get("reports", [])
+                elif "accession" in record:
+                    reports = [record]
+                else:
+                    reports = []
+
                 for report in reports:
                     accession = report.get("accession")
                     if not accession:
@@ -165,7 +173,11 @@ class NcbiDatasetsClient:
             tax_record = json.loads(lines[0])
             reports = tax_record.get("reports", [])
             if not reports:
-                return {}
+                # Fallback check if streaming object is directly resolved
+                if "taxonomy" in tax_record:
+                    reports = [tax_record]
+                else:
+                    return {}
             
             taxonomy = reports[0].get("taxonomy", {})
             classification = {}
