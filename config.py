@@ -25,20 +25,23 @@ def load_env_file():
 # Load .env variables first
 load_env_file()
 
+# --- Generalization Configs ---
+TARGET_TAXON = os.getenv("NCBI_TARGET_TAXON", "Fungi")
+API_KEY = os.getenv("NCBI_API_KEY")
+
 # --- Dynamic PATH Resolution for datasets CLI ---
-# If a custom NCBI datasets directory path is provided in .env, prepends it to system PATH.
-# This ensures that both direct execution and Cron schedules can locate the datasets CLI.
 CUSTOM_DATASETS_PATH = os.getenv("NCBI_DATASETS_PATH")
 if CUSTOM_DATASETS_PATH:
-    # Use pathsep to ensure multi-OS compatibility (colon on Unix, semicolon on Windows)
     os.environ["PATH"] = f"{CUSTOM_DATASETS_PATH}{os.pathsep}{os.environ.get('PATH', '')}"
 
-# Base directory setup
-DEFAULT_PROJECT_ROOT = os.path.expanduser(os.path.join("~", "fungi_project"))
-PROJECT_ROOT = os.getenv("FUNGI_PROJECT_ROOT", DEFAULT_PROJECT_ROOT)
-BASE_DIR = os.path.join(PROJECT_ROOT, "data", "fungi")
+# Base directory setup - Prepares fallback for legacy FUNGI_PROJECT_ROOT
+DEFAULT_PROJECT_ROOT = os.path.expanduser(os.path.join("~", "ncbi_project"))
+PROJECT_ROOT = os.getenv("NCBI_PROJECT_ROOT", os.getenv("FUNGI_PROJECT_ROOT", DEFAULT_PROJECT_ROOT))
 
-# Subdirectories
+# Route data outputs to a taxon-specific subdirectory
+BASE_DIR = os.path.join(PROJECT_ROOT, "data", TARGET_TAXON.lower())
+
+# Subdirectories per Taxon
 ALL_GENOMES_DIR = os.path.join(BASE_DIR, "all_genomes")
 TMP_DIR = os.path.join(PROJECT_ROOT, "data", "tmp")
 
@@ -60,14 +63,16 @@ GFF_CUSTOM_DIR = os.path.join(GFF_DIR, "custom")
 CDS_CUSTOM_DIR = os.path.join(CDS_DIR, "custom")
 FAA_CUSTOM_DIR = os.path.join(FAA_DIR, "custom")
 
-# Database & Overview paths
+# Database & Overview paths (Isolated per Taxon)
 DB_PATH = os.path.join(BASE_DIR, "genomes_metadata.json")
 OVERVIEW_PATH = os.path.join(BASE_DIR, "download_overview.txt")
 LOG_PATH = os.path.join(PROJECT_ROOT, "pipeline.log")
 
 API_DELAY = float(os.getenv("NCBI_API_DELAY", "0.5"))
 MAX_RETRIES = int(os.getenv("NCBI_MAX_RETRIES", "3"))
-PARALLEL_WORKERS = int(os.getenv("FUNGI_PARALLEL_WORKERS", "4"))
+
+# Thread Pool Workers count - Prepares fallback for legacy FUNGI_PARALLEL_WORKERS
+PARALLEL_WORKERS = int(os.getenv("NCBI_PARALLEL_WORKERS", os.getenv("FUNGI_PARALLEL_WORKERS", "4")))
 
 def init_directories():
     directories = [
@@ -87,5 +92,6 @@ def init_directories():
 if __name__ == "__main__":
     init_directories()
     print("Project Root:", PROJECT_ROOT)
+    print("Target Taxon:", TARGET_TAXON)
+    print("Base Directory:", BASE_DIR)
     print("Parallel Workers:", PARALLEL_WORKERS)
-    print("System PATH (with custom NCBI link if set):", os.environ.get("PATH"))

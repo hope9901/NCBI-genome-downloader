@@ -88,10 +88,10 @@ cd NCBI-genome-downloader
 ```bash
 cat <<EOF > .env
 # 다운로드한 데이터를 적재할 전체 프로젝트 루트 폴더 (생략 시 기본값: ~/ncbi_project)
-FUNGI_PROJECT_ROOT="/data/HYG/ncbi_project"
+NCBI_PROJECT_ROOT="/data/HYG/ncbi_project"
 
-# datasets CLI 바이너리가 들어있는 디렉토리 경로 (Cron 자동화 가동 시 필수)
-NCBI_DATASETS_PATH="/usr/local/bin"
+# datasets CLI 바이너리가 들어있는 디렉토리 경로 (사용자 서버의 실제 datasets 경로)
+NCBI_DATASETS_PATH="/home/programs/ncbi_datasets"
 
 # 다운로드 타겟 계통명 (Fungi, Viridiplantae, Bacteria, Metazoa, Mammalia 등 자유롭게 지정)
 NCBI_TARGET_TAXON="Viridiplantae"
@@ -100,7 +100,7 @@ NCBI_TARGET_TAXON="Viridiplantae"
 NCBI_API_KEY="your_ncbi_api_key_here"
 
 # 병렬 실행할 다운로드 스레드 개수 (API Key 미등록 시 4, 등록 시 8~15개 추천)
-FUNGI_PARALLEL_WORKERS=10
+NCBI_PARALLEL_WORKERS=10
 
 # 개별 다운로드 스레드 기동 간 API 호출 지연시간 (초)
 NCBI_API_DELAY=0.3
