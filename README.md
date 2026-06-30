@@ -1,34 +1,67 @@
-# NCBI Fungi Genome & Annotation Auto-Downloader
+# NCBI Genome Downloader (범용 멀티-계통 유전체 다운로더)
 
-NCBI에서 Fungi(균류, TaxID: 4751)에 속하고 annotation이 완료된 모든 genome 데이터(gff, cds.fasta, faa, fna 등)를 자동으로 수집하고, 매일 새로 업데이트되는 데이터를 주기적으로 동기화하는 백그라운드 파이프라인 시스템입니다.
+NCBI Datasets API 및 CLI를 활용하여 **식물(Plants), 균류(Fungi), 세균(Bacteria), 동물(Metazoa) 등 모든 생명체 계통군**의 유전체 어셈블리 데이터를 자동으로 대량 다운로드하고 구조화하는 범용 파이프라인 시스템입니다.
 
----
-
-## 주요 기능
-
-1. **JSON 기반 경량 DB (`genomes_metadata.json`)**
-   - 별도의 무거운 RDBMS 설치 없이 JSON 파일로 메타데이터와 다운로드 이력을 추적 및 동기화합니다.
-   - 파일 쓰기 중 크래시로 인한 손상을 방지하기 위해 **원자적 쓰기(Atomic Write)** 기법을 사용합니다.
-2. **Accession 기반 심볼릭 링크 구조**
-   - 개별 유전체 원본 폴더(`all_genomes/`)와 별개로, 파일 유형별 수집 폴더(`fna`, `gff`, `cds`, `faa`)를 생성합니다.
-   - 디스크 용량 낭비를 차단하기 위해 **Linux 심볼릭 링크(Symbolic Link)** 방식을 채택하며, 링크 파일명을 **`<Accession>.<ext>`**로 매핑하여 Accession 넘버로 즉각적인 개별 서열/어노테이션 탐색이 가능합니다.
-3. **NCBI Taxonomy 연동 및 계통별 요약 리포트**
-   - 각 유전체의 `taxId`를 통해 NCBI Taxonomy 데이터를 조회하여 문(Phylum), 강(Class), 목(Order) 등의 계통 정보를 로컬 DB에 보관합니다.
-   - 파이프라인 가동 완료 시 계층 트리 형태로 다운로드 현황판(`download_overview.txt`)을 자동 갱신합니다.
-4. **Linux Cron 스케줄 자동화**
-   - 크론 데몬 구동 시 발생할 수 있는 환경변수 누락 에러를 차단해 주는 쉘 래퍼(`run_pipeline.sh`)와 `crontab`에 매일 자동 실행을 스케줄링해 주는 `cron_setup.sh`를 포함합니다.
-5. **MD5 체크섬 무결성 검증 및 재시도 파이프라인**
-   - 다운로드한 ZIP 패키지 내부의 `md5sum.txt`를 실시간 파싱하여 추출된 파일들의 무결성을 교차 검증합니다.
-   - 검증 실패(불일치) 시 **해당 불완전 데이터를 즉시 완전 삭제**하고, 깨끗한 상태에서 최대 3회까지 다운로드 ➔ 압축 해제 ➔ MD5 검증의 재시도(Clean Retry) 루프를 수행합니다.
+다중 스레드 기반 병렬 전송과 MD5 무결성 검증, 데이터 손상 시 자동 재시도(Clean Retry), 그리고 자체 어노테이션(Re-annotation) 파이프라인 연동 설계가 탑재되어 대용량 유전체 뱅크 구축에 최적화되어 있습니다.
 
 ---
 
-## 배포 및 사용 방법 (WSL / Linux 서버 공통)
+## 🌟 주요 기능
+
+1. **범용 계통군(Taxon) 동적 지원**
+   - `.env` 설정 파일에서 타겟 계통명(예: `Fungi`, `Viridiplantae`, `Bacteria` 등)만 변경하면, 어떠한 생명체군이든 자동으로 식별하여 다운로드합니다.
+2. **계통군별 격리 및 구조화**
+   - 여러 계통군의 데이터를 교차 다운로드받더라도, 데이터와 데이터베이스가 지정한 계통명 소문자 폴더(`data/<taxon_name.lower()>/`) 하위에 각각 엄격하게 격리되어 적재되므로 데이터 꼬임이 없습니다.
+3. **병렬 멀티스레딩 다운로드 엔진 (`ThreadPoolExecutor`)**
+   - 다중 CPU 코어 환경에서 파일 전송 속도를 극대화합니다. 여러 스레드가 동시 다발적으로 데이터베이스에 쓸 때 생길 수 있는 파일 오손을 차단하기 위해 **Thread Lock** 메커니즘을 적용했습니다.
+4. **MD5 체크섬 무결성 검증 및 재시도 루프**
+   - 다운로드 완료 후 동봉된 `md5sum.txt` 기반으로 압축 해제된 실제 파일들을 실시간 교차 검증합니다.
+   - 단 하나의 파일이라도 무결성에 실패할 경우, **해당 불완전 데이터를 즉시 완전 삭제**하고 최대 3회까지 클린 재시도(Clean Retry)를 진행합니다.
+5. **자체 어노테이션(Re-annotation) 구조 설계**
+   - 다운로드된 개별 유전체 폴더 내부에 `ncbi/` (NCBI 원본) 및 `custom/` (자체 분석 결과) 서브폴더를 기본 탑재합니다.
+   - 원본 어노테이션이 아예 제공되지 않았던 유전체(`ncbi.has_annotation: 0`) 여부를 DB가 정밀 추적하므로, 추후 자체 개발한 어노테이션 파이프라인의 타겟 큐로 간편하게 활용할 수 있습니다.
+6. **GenBank / RefSeq (GCA / GCF) 파트너 정보 기록**
+   - 동일 유전체이나 GCA와 GCF로 다중 등록된 어셈블리들의 1대1 상호 매핑을 위해, 파트너 Accession 정보(`paired_accession`)를 DB에 유기적으로 기입합니다. (동일 서열이라도 어노테이션 유전자 이름 등이 미묘하게 다를 수 있으므로 두 파일 모두 독립된 물리 디렉토리에 온전히 다운로드받습니다).
+7. **NCBI API Key 연동**
+   - 다중 스레드 가동 시 발생하기 쉬운 NCBI 서버의 일시적 IP 차단(Rate Limit)을 예방할 수 있도록 API Key 연동을 정식 지원합니다.
+
+---
+
+## 📂 폴더 구조 설계 (`TARGET_TAXON="Viridiplantae"` 구동 예시)
+
+```text
+ncbi_project/
+├── pipeline.log                                      # 파이프라인 전체 구동 로그
+├── run_pipeline.sh                                   # Cron 스케줄러용 실행 래퍼
+│
+└── data/
+    └── viridiplantae/                                # [식물계] 계통별 독립 격리 폴더
+        ├── genomes_metadata.json                     # 식물군 전용 JSON 데이터베이스
+        ├── download_overview.txt                     # 식물군 다운로드 종합 현황판
+        │
+        ├── all_genomes/                              # 물리 데이터 디렉토리
+        │   └── Populus_trichocarpa_GCF_002013855.1/
+        │       ├── ncbi/                             # NCBI 원본 보관소
+        │       │   ├── ..._genomic.fna, ..._genomic.gff, ..._cds.fna, ..._protein.faa
+        │       └── custom/                           # 자체 파이프라인 결과 보관소 (실행 시 생성)
+        │
+        ├── fna/
+        │   └── ncbi/ ➔ ../all_genomes/.../ncbi/..._genomic.fna (Accession 기반 심볼릭 링크)
+        ├── gff/
+        │   └── ncbi/ ➔ ../all_genomes/.../ncbi/..._genomic.gff
+        ├── cds/
+        │   └── ncbi/ ➔ ../all_genomes/.../ncbi/..._cds.fna
+        └── faa/
+            └── ncbi/ ➔ ../all_genomes/.../ncbi/..._protein.faa
+```
+
+---
+
+## 🛠️ 배포 및 사용 방법 (Linux / WSL 공통)
 
 ### 1. 전제 조건 및 NCBI Datasets CLI 설치
-이 시스템은 NCBI 공식 CLI 도구인 `datasets`를 호출하여 데이터를 다운로드합니다. 타겟 리눅스 서버에 아래 명령어로 CLI(`datasets` 및 `dataformat`)를 설치해 줍니다.
+NCBI 공식 CLI 도구를 타겟 서버에 설치하고 실행 권한을 부여합니다.
 
-**Linux / WSL (Ubuntu 등) 설치 명령어:**
 ```bash
 # 리눅스 x64용 datasets 및 dataformat CLI 다운로드
 curl -o datasets 'https://ftp.ncbi.nlm.nih.gov/pub/datasets/command-line/v2/linux-amd64/datasets'
@@ -44,74 +77,55 @@ dataformat --version
 ```
 
 ### 2. 저장소 복사 (Git Clone)
-이 레포지토리를 다른 리눅스 서버의 작업 디렉토리에 클론합니다.
-
 ```bash
-# 레포지토리 복사
-git clone https://github.com/hope9901/fungi-genome-downloader.git
-cd fungi-genome-downloader
+git clone https://github.com/hope9901/NCBI-genome-downloader.git
+cd NCBI-genome-downloader
 ```
 
-### 3. 환경 변수 및 디렉토리 설정 (선택 사항)
-본 프로그램은 기본적으로 사용자 홈 디렉토리 하위의 `~/fungi_project` 폴더에 데이터를 적재하도록 설정되어 있습니다. 
-만약 저장 경로를 커스텀하거나 다중 코어 CPU(예: 40코어 서버 등) 환경에서 **병렬 다운로드 성능**을 올리고 싶다면 `.env` 파일에 관련 환경 변수를 기록해 줍니다.
+### 3. 환경 변수 구성 (`.env` 파일 설정)
+프로젝트 설치 디렉토리에 `.env` 파일을 생성하고 다운로드하고자 하는 생명체 계통군(Taxon) 정보 및 다운로드 설정을 자유롭게 설정합니다.
 
 ```bash
-# .env 파일 생성 및 병렬 작업자 수 설정 예시
 cat <<EOF > .env
-FUNGI_PROJECT_ROOT="~/fungi_project"  # 작업을 진행할 fungi_project 폴더 경로
-NCBI_DATASETS_PATH="!/ncbi_datasets"  # datasets CLI가 설치된 폴더 경로 (Cron 실행 시 필수)
-FUNGI_PARALLEL_WORKERS=10  # 병렬로 실행할 다운로드 스레드 개수 (기본값: 4)
-NCBI_API_DELAY=0.5        # 다운로드 간 API 호출 지연시간 (초)
+# 다운로드한 데이터를 적재할 전체 프로젝트 루트 폴더 (생략 시 기본값: ~/ncbi_project)
+FUNGI_PROJECT_ROOT="/data/HYG/ncbi_project"
+
+# datasets CLI 바이너리가 들어있는 디렉토리 경로 (Cron 자동화 가동 시 필수)
+NCBI_DATASETS_PATH="/usr/local/bin"
+
+# 다운로드 타겟 계통명 (Fungi, Viridiplantae, Bacteria, Metazoa, Mammalia 등 자유롭게 지정)
+NCBI_TARGET_TAXON="Viridiplantae"
+
+# NCBI 공식 API 키 (미기재 시 초당 3회, 기재 시 초당 10회 요청으로 제한이 대폭 완화됩니다)
+NCBI_API_KEY="your_ncbi_api_key_here"
+
+# 병렬 실행할 다운로드 스레드 개수 (API Key 미등록 시 4, 등록 시 8~15개 추천)
+FUNGI_PARALLEL_WORKERS=10
+
+# 개별 다운로드 스레드 기동 간 API 호출 지연시간 (초)
+NCBI_API_DELAY=0.3
 EOF
 ```
-> [!WARNING]
-> NCBI 서버는 동일 IP로부터 지나치게 많은 동시 요청이 들어오면 일시적으로 IP 차단(Temporary IP Ban)을 적용합니다. 40코어 서버더라도 안전을 위해 `FUNGI_PARALLEL_WORKERS` 값은 **최대 10~15개 이하**로 지정하시는 것을 권장합니다.
 
-### 4. 최초 수동 실행 테스트
-파이프라인을 수동 실행하여 Fungi 메타데이터 동기화 및 최초 유전체 다운로드가 정상 작동하는지 확인합니다.
-
+### 4. 파이프라인 구동
 ```bash
-# 파이프라인 실행
+# 뼈대 메타데이터 동기화 및 동시 다운로드 시작 (Lazy Taxonomy 기법으로 딜레이 없이 즉시 개시)
 python3 main.py
 ```
-*실행 과정에서 발생하는 모든 로깅 내역은 `pipeline.log` 파일에서 상세히 확인하실 수 있습니다.*
 
-### 5. 매일 자동 동기화 스케줄러 등록 (Cron)
-NCBI에 매일 새로 Submission되는 균류 데이터를 자동으로 추적하기 위해 Linux의 `cron`에 파이프라인을 등록합니다.
+### 5. Cron 스케줄러 등록 (자동 주기 업데이트)
+매일 자정/새벽 시간대에 새로운 신규 유전체(NCBI에 새로 릴리즈된 데이터)가 자동으로 유입되어 보완되도록 리눅스 `crontab`에 등록합니다.
 
 ```bash
-# cron 셋업 스크립트 실행 (매일 새벽 2시 실행 스케줄로 자동 등록됨)
-bash cron_setup.sh
+# 실행 권한 부여
+chmod +x run_pipeline.sh cron_setup.sh
 
-# crontab 등록 내용 확인
-crontab -l
+# 크론 셋업 스크립트 실행 (매일 새벽 2시 자동 업데이트 자동 등록)
+./cron_setup.sh
 ```
 
 ---
 
-## 수집 후 최종 데이터 디렉토리 구조
-
-동기화가 이루어지면 `FUNGI_PROJECT_ROOT/data/fungi` 경로는 다음과 같이 구조화됩니다.
-
-```text
-data/fungi/
-├── genomes_metadata.json                             # JSON 데이터베이스 (현황 관리)
-├── download_overview.txt                             # 계통별 집계 및 다운로드 종합 현황판
-│
-├── all_genomes/                                      # 학명_Strain_Accession_레벨 폴더 (원본 소스)
-│   └── Saccharomyces_cerevisiae_S288C_GCF_000146045.2_Chromosome/
-│       ├── Saccharomyces_cerevisiae_S288C_GCF_000146045.2_Chromosome_genomic.fna
-│       ├── Saccharomyces_cerevisiae_S288C_GCF_000146045.2_Chromosome_genomic.gff
-│       ├── Saccharomyces_cerevisiae_S288C_GCF_000146045.2_Chromosome_cds.fna
-│       └── Saccharomyces_cerevisiae_S288C_GCF_000146045.2_Chromosome_protein.faa
-│
-├── fna/                                              # Accession 기반 Genome FASTA 링크 폴더
-│   └── GCF_000146045.2.fna ➔ ../all_genomes/Saccharomyces_.../Saccharomyces_..._genomic.fna
-├── gff/                                              # Accession 기반 GFF 링크 폴더
-│   └── GCF_000146045.2.gff ➔ ../all_genomes/Saccharomyces_.../Saccharomyces_..._genomic.gff
-├── cds/                                              # Accession 기반 CDS FASTA 링크 폴더
-│   └── GCF_000146045.2.fna ➔ ../all_genomes/Saccharomyces_.../Saccharomyces_..._cds.fna
-└── faa/                                              # Accession 기반 Protein FASTA 링크 폴더
-    └── GCF_000146045.2.faa ➔ ../all_genomes/Saccharomyces_.../Saccharomyces_..._protein.faa
-```
+## 📊 현황 모니터링 (`download_overview.txt`)
+파이프라인이 기동되거나 가동 중일 때, 지정한 계통 디렉토리 내에 계통 구조별(문 ➔ 강) 다운로드 통계 및 상세 현황을 텍스트 리포트(`download_overview.txt`) 형태로 실시간 갱신합니다.
+* NCBI에서 제공하는 어노테이션이 없는 유전체는 `NCBI Ann: N`으로 표기되어 추후 자체 가동할 `Custom` 어노테이션의 주요 마커가 됩니다.
