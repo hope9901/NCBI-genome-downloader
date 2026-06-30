@@ -68,11 +68,24 @@ DB_PATH = os.path.join(BASE_DIR, "genomes_metadata.json")
 OVERVIEW_PATH = os.path.join(BASE_DIR, "download_overview.txt")
 LOG_PATH = os.path.join(PROJECT_ROOT, "pipeline.log")
 
-API_DELAY = float(os.getenv("NCBI_API_DELAY", "0.5"))
-MAX_RETRIES = int(os.getenv("NCBI_MAX_RETRIES", "3"))
+# --- Robust Robustness Fix: Defensive Integer/Float Parsing ---
+try:
+    API_DELAY = float(os.getenv("NCBI_API_DELAY", "0.5"))
+except ValueError:
+    print("[WARNING] Invalid NCBI_API_DELAY value in .env. Falling back to default: 0.5")
+    API_DELAY = 0.5
 
-# Thread Pool Workers count - Prepares fallback for legacy FUNGI_PARALLEL_WORKERS
-PARALLEL_WORKERS = int(os.getenv("NCBI_PARALLEL_WORKERS", os.getenv("FUNGI_PARALLEL_WORKERS", "4")))
+try:
+    MAX_RETRIES = int(os.getenv("NCBI_MAX_RETRIES", "3"))
+except ValueError:
+    print("[WARNING] Invalid NCBI_MAX_RETRIES value in .env. Falling back to default: 3")
+    MAX_RETRIES = 3
+
+try:
+    PARALLEL_WORKERS = int(os.getenv("NCBI_PARALLEL_WORKERS", os.getenv("FUNGI_PARALLEL_WORKERS", "4")))
+except ValueError:
+    print("[WARNING] Invalid NCBI_PARALLEL_WORKERS value in .env. Falling back to default: 4")
+    PARALLEL_WORKERS = 4
 
 def init_directories():
     directories = [

@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import threading
+import time
+import shutil
 from datetime import datetime
 
 logger = logging.getLogger("fungi_pipeline")
@@ -23,15 +25,27 @@ class JsonDbManager:
                 logger.info(f"Initialized new JSON database at {self.db_path}")
 
     def _load_unlocked(self):
-        """Loads database from disk (Internal use, caller must hold lock)."""
+        """Loads database from disk. Prevents destructive overwrite of corrupted DB files."""
         if not os.path.exists(self.db_path):
             return {}
         try:
             with open(self.db_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to load JSON database at {self.db_path}: {e}. Returning empty dictionary.")
-            return {}
+        except json.JSONDecodeError as e:
+            # Shield Pattern: Prevent data destruction by creating a backup and raising an exception
+            backup_path = f"{self.db_path}.corrupted.{int(time.time())}"
+            logger.critical(f"FATAL: Database corrupted at {self.db_path}! Error: {e}. Backing up to {backup_path}")
+            try:
+                shutil.copy(self.db_path, backup_path)
+            except Exception as copy_err:
+                logger.error(f"Failed to copy corrupted database backup: {copy_err}")
+            raise RuntimeError(
+                f"Local database file {self.db_path} is corrupted. Saved backup to {backup_path}. "
+                f"Halting pipeline to prevent destructive overwriting of download records."
+            )
+        except IOError as e:
+            logger.error(f"Failed to read JSON database at {self.db_path}: {e}")
+            raise e
 
     def _save_unlocked(self, data):
         """Saves data atomically (Internal use, caller must hold lock)."""
@@ -83,7 +97,6 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level", existing.get("assembly_level")),
                         "folder_name": item.get("folder_name", existing.get("folder_name")),
                         "tax_id": item.get("tax_id", existing.get("tax_id")),
-                        "paired_accession": item.get("paired_accession", existing.get("paired_accession")),
                     })
                     if "ncbi" not in existing:
                         existing["ncbi"] = {
@@ -117,7 +130,7 @@ class JsonDbManager:
                         "assembly_level": item.get("assembly_level"),
                         "folder_name": item.get("folder_name"),
                         "tax_id": item.get("tax_id"),
-                        "paired_accession": item.get("paired_accession"),  # Set GCA/GCF partner
+                        "paired_accession": item.get("paired_accession"),
                         "phylum": None,
                         "class": None,
                         "order": None,

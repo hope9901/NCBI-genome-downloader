@@ -37,6 +37,8 @@ def generate_overview_report(db_manager, overview_path):
     """
     Reads the database and generates a structured overview text report
     summarizing both NCBI source files and Custom annotation states.
+    Protects against massive text file blowup by truncating normal records to top 100,
+    while always displaying all failed download records.
     """
     records = db_manager.get_all_records()
     
@@ -99,7 +101,7 @@ def generate_overview_report(db_manager, overview_path):
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     lines.append("==========================================================================================")
-    lines.append(f"Fungi Genome Download & Annotation Overview (Updated: {now_str})")
+    lines.append(f"NCBI Genome Download & Annotation Overview - {config.TARGET_TAXON} (Updated: {now_str})")
     lines.append("==========================================================================================\n")
 
     lines.append("[NCBI Source Download Statistics]")
@@ -121,10 +123,11 @@ def generate_overview_report(db_manager, overview_path):
             lines.append(f"    * {klass} [{c_stats['completed']} / {c_stats['total']}]")
     lines.append("\n")
 
-    lines.append("[Detailed Status Table]")
+    # Table Slicing logic to prevent huge text files
+    failed_rows = []
+    active_rows = []
+    
     header = f"{'Accession':<18} | {'Organism Name':<28} | {'NCBI Status':<12} | NCBI Ann | FNA GFF CDS FAA | {'Custom Status':<13} | GFF CDS FAA"
-    lines.append(header)
-    lines.append("-" * len(header))
 
     for acc, info in sorted(records.items()):
         org_name = info.get("organism_name", "")
@@ -148,7 +151,31 @@ def generate_overview_report(db_manager, overview_path):
         c_faa = "Y" if custom.get("has_faa") else "N"
 
         row = f"{acc:<18} | {org_name:<28} | {ncbi_status:<12} |    {ncbi_ann}     |  {fna}   {gff}   {cds}   {faa}  | {custom_status:<13} |  {c_gff}   {c_cds}   {c_faa}"
-        lines.append(row)
+        
+        if ncbi_status == "failed" or custom_status == "failed":
+            failed_rows.append(row)
+        else:
+            active_rows.append(row)
+
+    lines.append(f"[Detailed Status Table (Showing All Failed & Top 100 Active Records)]")
+    lines.append(header)
+    lines.append("-" * len(header))
+
+    # Always show all failures so that the user spots anomalies immediately
+    if failed_rows:
+        lines.append("--- FAILED RECORDS ---")
+        for row in failed_rows:
+            lines.append(row)
+
+    # Show active rows with truncation threshold
+    lines.append("--- ACTIVE/COMPLETED/PENDING RECORDS ---")
+    if len(active_rows) > 100:
+        for row in active_rows[:100]:
+            lines.append(row)
+        lines.append(f"... (Truncated {len(active_rows) - 100} active pending/completed records to prevent massive overview report file size) ...")
+    else:
+        for row in active_rows:
+            lines.append(row)
 
     report_content = "\n".join(lines)
     
@@ -162,8 +189,6 @@ def generate_overview_report(db_manager, overview_path):
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
     Downloads, extracts, validates MD5, reorganizes files.
-    Both GCA and GCF pairs are downloaded physically and independently to preserve potential
-    differences in annotation coordinates/identifiers, while paired relationships are tracked in the DB.
     """
     folder_name = info.get("folder_name")
     tax_id = info.get("tax_id")
@@ -246,7 +271,7 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
                 pass
 
 def run_pipeline():
-    logger.info("Starting Fungi Genome Auto-Download Pipeline...")
+    logger.info(f"Starting NCBI {config.TARGET_TAXON} Genome Auto-Download Pipeline...")
     config.init_directories()
 
     db_manager = JsonDbManager(config.DB_PATH)
@@ -261,7 +286,7 @@ def run_pipeline():
     # Phase 1: Metadata Sync
     # ======================================================================
     try:
-        metadata_list = ncbi_client.fetch_fungal_metadata()
+        metadata_list = ncbi_client.fetch_genome_metadata()
     except Exception as e:
         logger.critical(f"Failed to synchronize metadata from NCBI: {e}")
         return

@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 import hashlib
+import threading
 import config
 
 logger = logging.getLogger("fungi_pipeline")
@@ -44,6 +45,7 @@ class NcbiDatasetsClient:
         self.taxonomy_cache = {}
         self.datasets_bin = self._find_datasets_binary()
         self.api_key = config.API_KEY
+        self.tax_lock = threading.Lock()  # Lock to serialize NCBI Taxonomy API calls among threads
 
     def _find_datasets_binary(self):
         """Locates the 'datasets' CLI tool in system PATH."""
@@ -109,36 +111,25 @@ class NcbiDatasetsClient:
                         continue
                     
                     # --- Robust Hybrid Schema Parsing (CamelCase + snake_case) ---
-                    # 1. Resolve assembly_info block
                     assembly_info = report.get("assemblyInfo") or report.get("assembly_info") or {}
-                    
-                    # 2. Resolve organism block
                     organism = report.get("organism") or {}
                     
-                    # 3. Resolve organismName / organism_name
                     org_name = organism.get("organismName") or organism.get("organism_name") or ""
-                    
-                    # 4. Resolve taxId / tax_id
                     tax_id = organism.get("taxId") or organism.get("tax_id")
                     
-                    # 5. Resolve strain
                     strain = ""
                     infra_names = organism.get("infraspecificNames") or organism.get("infraspecific_names") or {}
                     if isinstance(infra_names, dict):
                         strain = infra_names.get("strain") or ""
                     
-                    # 6. Resolve assemblyLevel / assembly_level
                     assembly_level = assembly_info.get("assemblyLevel") or assembly_info.get("assembly_level") or "unspecified"
                     
-                    # 7. Resolve pairedAssemblyAccession / paired_assembly_accession
                     paired_accession = assembly_info.get("pairedAssemblyAccession") or assembly_info.get("paired_assembly_accession")
                     if paired_accession:
                         paired_accession = paired_accession.strip()
 
-                    # 8. Resolve annotation availability
                     has_annotation = 1 if report.get("annotation_info") or report.get("annotationInfo") else 0
                     
-                    # File system safety sanitization
                     san_org = sanitize_name(org_name)
                     san_strain = sanitize_name(strain)
                     san_level = sanitize_name(assembly_level)
@@ -174,55 +165,62 @@ class NcbiDatasetsClient:
         return metadata_list
 
     def fetch_taxonomy_lineage(self, tax_id):
-        """Retrieves taxonomic lineage. Uses memory cache."""
+        """Retrieves taxonomic lineage. Uses cache and Thread Lock to serialize concurrent API queries."""
         if not tax_id:
             return {}
         
+        # Check cache outside lock for fast read
         if tax_id in self.taxonomy_cache:
             return self.taxonomy_cache[tax_id]
 
         if not self.check_cli_installed():
             return {}
 
-        time.sleep(self.api_delay)
+        # Double-Checked Locking Pattern: Serialize API requests
+        with self.tax_lock:
+            # Recheck cache after acquiring lock
+            if tax_id in self.taxonomy_cache:
+                return self.taxonomy_cache[tax_id]
 
-        cmd = [self.datasets_bin, "summary", "taxonomy", "taxon", str(tax_id), "--as-json-lines"]
-        if self.api_key:
-            cmd.extend(["--api-key", self.api_key])
+            time.sleep(self.api_delay)
 
-        logger.debug(f"Querying taxonomy for TaxID {tax_id}...")
+            cmd = [self.datasets_bin, "summary", "taxonomy", "taxon", str(tax_id), "--as-json-lines"]
+            if self.api_key:
+                cmd.extend(["--api-key", self.api_key])
 
-        try:
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-            lines = result.stdout.strip().split("\n")
-            if not lines or not lines[0].strip():
-                return {}
-            
-            tax_record = json.loads(lines[0])
-            reports = tax_record.get("reports", [])
-            if not reports:
-                if "taxonomy" in tax_record:
-                    reports = [tax_record]
-                else:
+            logger.debug(f"Querying taxonomy for TaxID {tax_id}...")
+
+            try:
+                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+                lines = result.stdout.strip().split("\n")
+                if not lines or not lines[0].strip():
                     return {}
-            
-            taxonomy = reports[0].get("taxonomy", {})
-            classification = {}
-            
-            lineage = taxonomy.get("lineage", [])
-            for node in lineage:
-                rank = node.get("rank")
-                name = node.get("name")
-                if rank in ("phylum", "class", "order", "family", "genus"):
-                    classification[rank] = name
-            
-            self.taxonomy_cache[tax_id] = classification
-            logger.debug(f"TaxID {tax_id} lineage: {classification}")
-            return classification
-            
-        except Exception as e:
-            logger.warning(f"Failed to fetch taxonomy for TaxID {tax_id}: {e}")
-            return {}
+                
+                tax_record = json.loads(lines[0])
+                reports = tax_record.get("reports", [])
+                if not reports:
+                    if "taxonomy" in tax_record:
+                        reports = [tax_record]
+                    else:
+                        return {}
+                
+                taxonomy = reports[0].get("taxonomy", {})
+                classification = {}
+                
+                lineage = taxonomy.get("lineage", [])
+                for node in lineage:
+                    rank = node.get("rank")
+                    name = node.get("name")
+                    if rank in ("phylum", "class", "order", "family", "genus"):
+                        classification[rank] = name
+                
+                self.taxonomy_cache[tax_id] = classification
+                logger.debug(f"TaxID {tax_id} lineage: {classification}")
+                return classification
+                
+            except Exception as e:
+                logger.warning(f"Failed to fetch taxonomy for TaxID {tax_id}: {e}")
+                return {}
 
     def download_genome_package(self, accession, tmp_dir):
         """Downloads a genome data package for a specific accession."""
