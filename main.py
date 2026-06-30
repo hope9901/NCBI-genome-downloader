@@ -189,6 +189,8 @@ def generate_overview_report(db_manager, overview_path):
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
     Downloads, extracts, validates MD5, reorganizes files.
+    Also links the output directory into the lineage hierarchy (Phylum ➔ Class)
+    for easy counting and directory browsing.
     """
     folder_name = info.get("folder_name")
     tax_id = info.get("tax_id")
@@ -233,7 +235,15 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
         # 3. Create symlinks pointing to final_dest_dir/ncbi/
         ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
 
-        # 4. Update Database (Thread-safe NCBI status update)
+        # 4. Create taxonomic browse directory links (Phylum ➔ Class)
+        latest_record = db_manager.get_genome(accession) or {}
+        phylum = latest_record.get("phylum")
+        klass = latest_record.get("class")
+        ncbi_client.create_taxonomy_symlink(
+            folder_name, phylum, klass, final_dest_dir, config.TAXONOMY_DIR
+        )
+
+        # 5. Update Database (Thread-safe NCBI status update)
         db_manager.update_ncbi_status(
             accession, "completed",
             has_fna=file_presence["has_fna"],

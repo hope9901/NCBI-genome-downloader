@@ -435,3 +435,41 @@ class NcbiDatasetsClient:
                         logger.debug(f"Fallback copied file to: {link_path}")
                     except Exception as copy_err:
                         logger.error(f"Fallback copy failed: {copy_err}")
+
+    def create_taxonomy_symlink(self, folder_name, phylum, klass, final_dest_dir, taxonomy_base_dir):
+        """
+        Creates hierarchical taxonomic directory layout (Phylum ➔ Class)
+        and symlinks the downloaded genome directory for browseability and counting.
+        """
+        phylum_san = sanitize_name(phylum or "Unknown_Phylum")
+        class_san = sanitize_name(klass or "Unknown_Class")
+        
+        target_dir = os.path.join(taxonomy_base_dir, phylum_san, class_san)
+        os.makedirs(target_dir, exist_ok=True)
+        
+        link_path = os.path.join(target_dir, folder_name)
+        
+        try:
+            rel_target_path = os.path.relpath(final_dest_dir, target_dir)
+        except ValueError:
+            rel_target_path = final_dest_dir
+
+        if os.path.exists(link_path) or os.path.islink(link_path):
+            try:
+                if os.path.islink(link_path) or os.path.isfile(link_path):
+                    os.remove(link_path)
+                else:
+                    shutil.rmtree(link_path)
+            except OSError as e:
+                logger.warning(f"Could not clean up existing taxonomy symlink at {link_path}: {e}")
+
+        try:
+            # Create a directory-level symbolic link pointing to the full genome directory
+            # Windows requires target_is_directory=True for directory symlinks
+            if sys.platform.startswith("win"):
+                os.symlink(rel_target_path, link_path, target_is_directory=True)
+            else:
+                os.symlink(rel_target_path, link_path)
+            logger.debug(f"Created taxonomy symlink: {link_path} ➔ {rel_target_path}")
+        except OSError as e:
+            logger.warning(f"Failed to create taxonomy directory symlink at {link_path}: {e}")
