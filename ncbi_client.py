@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 import hashlib
+import config
 
 logger = logging.getLogger("fungi_pipeline")
 
@@ -42,6 +43,7 @@ class NcbiDatasetsClient:
         self.max_retries = max_retries
         self.taxonomy_cache = {}
         self.datasets_bin = self._find_datasets_binary()
+        self.api_key = config.API_KEY
 
     def _find_datasets_binary(self):
         """Locates the 'datasets' CLI tool in system PATH."""
@@ -59,18 +61,22 @@ class NcbiDatasetsClient:
             self.datasets_bin = self._find_datasets_binary()
         return self.datasets_bin is not None
 
-    def fetch_fungal_metadata(self):
+    def fetch_genome_metadata(self):
         """
-        Executes 'datasets summary genome taxon Fungi --as-json-lines'
-        to retrieve all fungal genomes (both annotated and unannotated).
-        Extracts GCA/GCF pairing relationships.
+        Executes 'datasets summary genome taxon <TARGET_TAXON> --as-json-lines'
+        to retrieve all fungal/plant/bacterial genomes.
+        Robustly parses both CamelCase and snake_case JSON schemas outputted by NCBI.
         """
         if not self.check_cli_installed():
             raise RuntimeError("NCBI Datasets CLI is not installed or not in PATH.")
 
-        cmd = [self.datasets_bin, "summary", "genome", "taxon", "Fungi", "--as-json-lines"]
-        logger.info("Fetching Fungi genome metadata from NCBI...")
-        print("Fetching Fungi genome metadata from NCBI (Taxon Fungi, ALL genomes)...")
+        taxon = config.TARGET_TAXON
+        cmd = [self.datasets_bin, "summary", "genome", "taxon", taxon, "--as-json-lines"]
+        if self.api_key:
+            cmd.extend(["--api-key", self.api_key])
+
+        logger.info(f"Fetching {taxon} genome metadata from NCBI...")
+        print(f"Fetching {taxon} genome metadata from NCBI (Taxon: {taxon}, ALL genomes)...")
 
         try:
             result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
@@ -102,26 +108,37 @@ class NcbiDatasetsClient:
                     if not accession:
                         continue
                     
-                    assembly_info = report.get("assemblyInfo", {})
-                    organism = report.get("organism", {})
+                    # --- Robust Hybrid Schema Parsing (CamelCase + snake_case) ---
+                    # 1. Resolve assembly_info block
+                    assembly_info = report.get("assemblyInfo") or report.get("assembly_info") or {}
                     
-                    org_name = organism.get("organismName", "")
-                    tax_id = organism.get("taxId")
+                    # 2. Resolve organism block
+                    organism = report.get("organism") or {}
                     
+                    # 3. Resolve organismName / organism_name
+                    org_name = organism.get("organismName") or organism.get("organism_name") or ""
+                    
+                    # 4. Resolve taxId / tax_id
+                    tax_id = organism.get("taxId") or organism.get("tax_id")
+                    
+                    # 5. Resolve strain
                     strain = ""
-                    infra_names = organism.get("infraspecificNames", {})
+                    infra_names = organism.get("infraspecificNames") or organism.get("infraspecific_names") or {}
                     if isinstance(infra_names, dict):
-                        strain = infra_names.get("strain", "")
+                        strain = infra_names.get("strain") or ""
                     
-                    assembly_level = assembly_info.get("assemblyLevel", "unspecified")
+                    # 6. Resolve assemblyLevel / assembly_level
+                    assembly_level = assembly_info.get("assemblyLevel") or assembly_info.get("assembly_level") or "unspecified"
                     
-                    # Extract pairing information (GCA <--> GCF partner accession)
-                    paired_accession = assembly_info.get("pairedAssemblyAccession")
+                    # 7. Resolve pairedAssemblyAccession / paired_assembly_accession
+                    paired_accession = assembly_info.get("pairedAssemblyAccession") or assembly_info.get("paired_assembly_accession")
                     if paired_accession:
                         paired_accession = paired_accession.strip()
 
+                    # 8. Resolve annotation availability
                     has_annotation = 1 if report.get("annotation_info") or report.get("annotationInfo") else 0
                     
+                    # File system safety sanitization
                     san_org = sanitize_name(org_name)
                     san_strain = sanitize_name(strain)
                     san_level = sanitize_name(assembly_level)
@@ -142,7 +159,7 @@ class NcbiDatasetsClient:
                         "folder_name": folder_name,
                         "tax_id": tax_id,
                         "has_annotation": has_annotation,
-                        "paired_accession": paired_accession,  # Store GCA/GCF pairing relationship
+                        "paired_accession": paired_accession,
                         "phylum": None,
                         "class": None,
                         "order": None,
@@ -153,7 +170,7 @@ class NcbiDatasetsClient:
                 logger.error(f"Failed to parse JSON line: {e}")
                 continue
 
-        logger.info(f"Retrieved {len(metadata_list)} fungal genome metadata records.")
+        logger.info(f"Retrieved {len(metadata_list)} {taxon} genome metadata records.")
         return metadata_list
 
     def fetch_taxonomy_lineage(self, tax_id):
@@ -170,6 +187,9 @@ class NcbiDatasetsClient:
         time.sleep(self.api_delay)
 
         cmd = [self.datasets_bin, "summary", "taxonomy", "taxon", str(tax_id), "--as-json-lines"]
+        if self.api_key:
+            cmd.extend(["--api-key", self.api_key])
+
         logger.debug(f"Querying taxonomy for TaxID {tax_id}...")
 
         try:
@@ -219,7 +239,9 @@ class NcbiDatasetsClient:
             "--include", "genome,gff3,rna,cds,protein",
             "--filename", zip_path
         ]
-        
+        if self.api_key:
+            cmd.extend(["--api-key", self.api_key])
+
         logger.info(f"Downloading {accession} to {zip_path}...")
         
         try:
