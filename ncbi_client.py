@@ -151,6 +151,7 @@ class NcbiDatasetsClient:
                         "tax_id": tax_id,
                         "has_annotation": has_annotation,
                         "paired_accession": paired_accession,
+                        "kingdom": None,
                         "phylum": None,
                         "class": None,
                         "order": None,
@@ -165,7 +166,7 @@ class NcbiDatasetsClient:
         return metadata_list
 
     def fetch_taxonomy_lineage(self, tax_id):
-        """Retrieves taxonomic lineage. Uses cache and Thread Lock to serialize concurrent API queries."""
+        """Retrieves 6 core taxonomic lineage ranks. Uses Double-Checked Locking to serialize API calls."""
         if not tax_id:
             return {}
         
@@ -205,17 +206,37 @@ class NcbiDatasetsClient:
                         return {}
                 
                 taxonomy = reports[0].get("taxonomy", {})
-                classification = {}
+                classification = {
+                    "kingdom": None,
+                    "phylum": None,
+                    "class": None,
+                    "order": None,
+                    "family": None,
+                    "genus": None
+                }
+                
+                # Check top-level superkingdom/kingdom
+                classification["kingdom"] = taxonomy.get("kingdom") or taxonomy.get("superkingdom")
                 
                 lineage = taxonomy.get("lineage", [])
                 for node in lineage:
                     rank = node.get("rank")
                     name = node.get("name")
-                    if rank in ("phylum", "class", "order", "family", "genus"):
-                        classification[rank] = name
+                    if rank in ("superkingdom", "kingdom"):
+                        classification["kingdom"] = name
+                    elif rank == "phylum":
+                        classification["phylum"] = name
+                    elif rank == "class":
+                        classification["class"] = name
+                    elif rank == "order":
+                        classification["order"] = name
+                    elif rank == "family":
+                        classification["family"] = name
+                    elif rank == "genus":
+                        classification["genus"] = name
                 
                 self.taxonomy_cache[tax_id] = classification
-                logger.debug(f"TaxID {tax_id} lineage: {classification}")
+                logger.debug(f"TaxID {tax_id} 6-rank lineage: {classification}")
                 return classification
                 
             except Exception as e:
@@ -436,15 +457,21 @@ class NcbiDatasetsClient:
                     except Exception as copy_err:
                         logger.error(f"Fallback copy failed: {copy_err}")
 
-    def create_taxonomy_symlink(self, folder_name, phylum, klass, final_dest_dir, taxonomy_base_dir):
+    def create_taxonomy_symlink(self, folder_name, kingdom, phylum, klass, order, family, genus, final_dest_dir, taxonomy_base_dir):
         """
-        Creates hierarchical taxonomic directory layout (Phylum ➔ Class)
-        and symlinks the downloaded genome directory for browseability and counting.
+        Creates hierarchical 6-level taxonomic directory layout (Kingdom ➔ Phylum ➔ Class ➔ Order ➔ Family ➔ Genus)
+        and symlinks the downloaded genome directory for browseability.
+        Missing ranks default to 'Unknown_<Rank>' (or Unclassified) to maintain directory depth.
         """
-        phylum_san = sanitize_name(phylum or "Unknown_Phylum")
-        class_san = sanitize_name(klass or "Unknown_Class")
+        king_san = sanitize_name(kingdom or "Unknown_Kingdom")
+        phyl_san = sanitize_name(phylum or "Unknown_Phylum")
+        clas_san = sanitize_name(klass or "Unknown_Class")
+        orde_san = sanitize_name(order or "Unknown_Order")
+        fami_san = sanitize_name(family or "Unknown_Family")
+        genu_san = sanitize_name(genus or "Unknown_Genus")
         
-        target_dir = os.path.join(taxonomy_base_dir, phylum_san, class_san)
+        # Build 6-level taxonomy tree
+        target_dir = os.path.join(taxonomy_base_dir, king_san, phyl_san, clas_san, orde_san, fami_san, genu_san)
         os.makedirs(target_dir, exist_ok=True)
         
         link_path = os.path.join(target_dir, folder_name)
@@ -465,7 +492,6 @@ class NcbiDatasetsClient:
 
         try:
             # Create a directory-level symbolic link pointing to the full genome directory
-            # Windows requires target_is_directory=True for directory symlinks
             if sys.platform.startswith("win"):
                 os.symlink(rel_target_path, link_path, target_is_directory=True)
             else:

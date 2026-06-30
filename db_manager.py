@@ -131,6 +131,7 @@ class JsonDbManager:
                         "folder_name": item.get("folder_name"),
                         "tax_id": item.get("tax_id"),
                         "paired_accession": item.get("paired_accession"),
+                        "kingdom": None,
                         "phylum": None,
                         "class": None,
                         "order": None,
@@ -222,14 +223,15 @@ class JsonDbManager:
             logger.info(f"Updated Custom annotation status for {accession} to {status} (GFF:{has_gff})")
             return True
 
-    def update_taxonomy_info(self, accession, phylum, klass, order, family, genus):
-        """Updates taxonomic lineage fields for a specific accession. Thread-safe."""
+    def update_taxonomy_info(self, accession, kingdom, phylum, klass, order, family, genus):
+        """Updates taxonomic lineage fields (6 main ranks) for a specific accession. Thread-safe."""
         with self.lock:
             data = self._load_unlocked()
             if accession not in data:
                 return False
             
             record = data[accession]
+            record["kingdom"] = kingdom
             record["phylum"] = phylum
             record["class"] = klass
             record["order"] = order
@@ -237,7 +239,7 @@ class JsonDbManager:
             record["genus"] = genus
             
             self._save_unlocked(data)
-            logger.debug(f"Updated taxonomy lineage for {accession}: Phylum={phylum}, Class={klass}")
+            logger.debug(f"Updated taxonomy lineage for {accession}: Kingdom={kingdom}, Phylum={phylum}, Class={klass}")
             return True
 
     def get_pending_accessions(self):

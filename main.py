@@ -39,6 +39,7 @@ def generate_overview_report(db_manager, overview_path):
     summarizing both NCBI source files and Custom annotation states.
     Protects against massive text file blowup by truncating normal records to top 100,
     while always displaying all failed download records.
+    Hierarchically summaries taxons from Kingdom ➔ Phylum ➔ Class.
     """
     records = db_manager.get_all_records()
     
@@ -79,17 +80,27 @@ def generate_overview_report(db_manager, overview_path):
         else:
             custom_pending += 1
 
+        # 3-level hierarchical statistics (Kingdom ➔ Phylum ➔ Class)
+        kingdom = info.get("kingdom") or "Unknown_Kingdom"
         phylum = info.get("phylum") or "Unknown_Phylum"
         klass = info.get("class") or "Unknown_Class"
 
-        if phylum not in tax_summary:
-            tax_summary[phylum] = {"total": 0, "completed": 0, "classes": {}}
+        if kingdom not in tax_summary:
+            tax_summary[kingdom] = {"total": 0, "completed": 0, "phyla": {}}
         
-        tax_summary[phylum]["total"] += 1
+        tax_summary[kingdom]["total"] += 1
         if ncbi_status == "completed":
-            tax_summary[phylum]["completed"] += 1
+            tax_summary[kingdom]["completed"] += 1
 
-        classes_dict = tax_summary[phylum]["classes"]
+        phyla_dict = tax_summary[kingdom]["phyla"]
+        if phylum not in phyla_dict:
+            phyla_dict[phylum] = {"total": 0, "completed": 0, "classes": {}}
+        
+        phyla_dict[phylum]["total"] += 1
+        if ncbi_status == "completed":
+            phyla_dict[phylum]["completed"] += 1
+
+        classes_dict = phyla_dict[phylum]["classes"]
         if klass not in classes_dict:
             classes_dict[klass] = {"total": 0, "completed": 0}
         
@@ -116,11 +127,13 @@ def generate_overview_report(db_manager, overview_path):
     lines.append(f"  - Failed Custom Annotations    : {custom_failed}")
     lines.append(f"  - Pending Custom Annotations   : {custom_pending}\n")
 
-    lines.append("[Taxonomy Summary (Phylum ➔ Class) [Completed / Total]]")
-    for phylum, p_stats in sorted(tax_summary.items()):
-        lines.append(f"  - {phylum} [{p_stats['completed']} / {p_stats['total']}]")
-        for klass, c_stats in sorted(p_stats["classes"].items()):
-            lines.append(f"    * {klass} [{c_stats['completed']} / {c_stats['total']}]")
+    lines.append("[Taxonomy Summary (Kingdom ➔ Phylum ➔ Class) [Completed / Total]]")
+    for kingdom, k_stats in sorted(tax_summary.items()):
+        lines.append(f"  * Kingdom: {kingdom} [{k_stats['completed']} / {k_stats['total']}]")
+        for phylum, p_stats in sorted(k_stats["phyla"].items()):
+            lines.append(f"    - Phylum: {phylum} [{p_stats['completed']} / {p_stats['total']}]")
+            for klass, c_stats in sorted(p_stats["classes"].items()):
+                lines.append(f"      + Class: {klass} [{c_stats['completed']} / {c_stats['total']}]")
     lines.append("\n")
 
     # Table Slicing logic to prevent huge text files
@@ -189,8 +202,8 @@ def generate_overview_report(db_manager, overview_path):
 def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_client, type_dirs):
     """
     Downloads, extracts, validates MD5, reorganizes files.
-    Also links the output directory into the lineage hierarchy (Phylum ➔ Class)
-    for easy counting and directory browsing.
+    Also links the output directory into the 6-level lineage hierarchy
+    (Kingdom ➔ Phylum ➔ Class ➔ Order ➔ Family ➔ Genus) for easy counting and directory browsing.
     """
     folder_name = info.get("folder_name")
     tax_id = info.get("tax_id")
@@ -208,6 +221,7 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
             if lineage:
                 db_manager.update_taxonomy_info(
                     accession,
+                    kingdom=lineage.get("kingdom"),
                     phylum=lineage.get("phylum"),
                     klass=lineage.get("class"),
                     order=lineage.get("order"),
@@ -235,12 +249,16 @@ def process_single_genome(idx, total_count, accession, info, db_manager, ncbi_cl
         # 3. Create symlinks pointing to final_dest_dir/ncbi/
         ncbi_client.create_symlinks(folder_name, accession, final_dest_dir, type_dirs)
 
-        # 4. Create taxonomic browse directory links (Phylum ➔ Class)
+        # 4. Create 6-level taxonomic browse directory links (Kingdom -> Phylum -> Class -> Order -> Family -> Genus)
         latest_record = db_manager.get_genome(accession) or {}
+        kingdom = latest_record.get("kingdom")
         phylum = latest_record.get("phylum")
         klass = latest_record.get("class")
+        order = latest_record.get("order")
+        family = latest_record.get("family")
+        genus = latest_record.get("genus")
         ncbi_client.create_taxonomy_symlink(
-            folder_name, phylum, klass, final_dest_dir, config.TAXONOMY_DIR
+            folder_name, kingdom, phylum, klass, order, family, genus, final_dest_dir, config.TAXONOMY_DIR
         )
 
         # 5. Update Database (Thread-safe NCBI status update)
