@@ -88,10 +88,10 @@ cd NCBI-genome-downloader
 ```bash
 cat <<EOF > .env
 # 다운로드한 데이터를 적재할 전체 프로젝트 루트 폴더 (생략 시 기본값: ~/ncbi_project)
-NCBI_PROJECT_ROOT="/data/HYG/ncbi_project"
+NCBI_PROJECT_ROOT="~/ncbi_project"
 
 # datasets CLI 바이너리가 들어있는 디렉토리 경로 (사용자 서버의 실제 datasets 경로)
-NCBI_DATASETS_PATH="/home/programs/ncbi_datasets"
+NCBI_DATASETS_PATH="~/ncbi_datasets"
 
 # 다운로드 타겟 계통명 (Fungi, Viridiplantae, Bacteria, Metazoa, Mammalia 등 자유롭게 지정)
 NCBI_TARGET_TAXON="Viridiplantae"
