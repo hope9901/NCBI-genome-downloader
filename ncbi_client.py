@@ -461,20 +461,29 @@ class NcbiDatasetsClient:
         """
         Creates hierarchical 6-level taxonomic directory layout (Kingdom ➔ Phylum ➔ Class ➔ Order ➔ Family ➔ Genus)
         and symlinks the downloaded genome directory for browseability.
-        Missing ranks default to 'Unknown_<Rank>' (or Unclassified) to maintain directory depth.
+        If too many core taxonomic definitions are missing (or both Kingdom and Phylum are empty),
+        routes the link flatly under taxonomy/Unclassified/ to prevent messy, deep Unknown paths.
         """
-        king_san = sanitize_name(kingdom or "Unknown_Kingdom")
-        phyl_san = sanitize_name(phylum or "Unknown_Phylum")
-        clas_san = sanitize_name(klass or "Unknown_Class")
-        orde_san = sanitize_name(order or "Unknown_Order")
-        fami_san = sanitize_name(family or "Unknown_Family")
-        genu_san = sanitize_name(genus or "Unknown_Genus")
-        
-        # Build 6-level taxonomy tree
-        target_dir = os.path.join(taxonomy_base_dir, king_san, phyl_san, clas_san, orde_san, fami_san, genu_san)
-        os.makedirs(target_dir, exist_ok=True)
-        
-        link_path = os.path.join(target_dir, folder_name)
+        ranks = [kingdom, phylum, klass, order, family, genus]
+        missing_count = sum(1 for r in ranks if not r)
+
+        # Smart Unclassified Router: If we lack basic Kingdom & Phylum, or have >= 4 missing standard ranks
+        if (not kingdom and not phylum) or missing_count >= 4:
+            target_dir = os.path.join(taxonomy_base_dir, "Unclassified")
+            os.makedirs(target_dir, exist_ok=True)
+            link_path = os.path.join(target_dir, folder_name)
+        else:
+            # Standard 6-level taxonomy tree with defensive Unknown fallbacks
+            king_san = sanitize_name(kingdom or "Unknown_Kingdom")
+            phyl_san = sanitize_name(phylum or "Unknown_Phylum")
+            clas_san = sanitize_name(klass or "Unknown_Class")
+            orde_san = sanitize_name(order or "Unknown_Order")
+            fami_san = sanitize_name(family or "Unknown_Family")
+            genu_san = sanitize_name(genus or "Unknown_Genus")
+            
+            target_dir = os.path.join(taxonomy_base_dir, king_san, phyl_san, clas_san, orde_san, fami_san, genu_san)
+            os.makedirs(target_dir, exist_ok=True)
+            link_path = os.path.join(target_dir, folder_name)
         
         try:
             rel_target_path = os.path.relpath(final_dest_dir, target_dir)

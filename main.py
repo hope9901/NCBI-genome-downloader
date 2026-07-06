@@ -40,6 +40,7 @@ def generate_overview_report(db_manager, overview_path):
     Protects against massive text file blowup by truncating normal records to top 100,
     while always displaying all failed download records.
     Hierarchically summaries taxons from Kingdom ➔ Phylum ➔ Class.
+    Also handles unclassified counts dynamically.
     """
     records = db_manager.get_all_records()
     
@@ -48,6 +49,7 @@ def generate_overview_report(db_manager, overview_path):
     ncbi_failed = 0
     ncbi_pending = 0
     ncbi_unannotated_total = 0
+    unclassified_count = 0
     
     custom_completed = 0
     custom_failed = 0
@@ -80,33 +82,49 @@ def generate_overview_report(db_manager, overview_path):
         else:
             custom_pending += 1
 
-        # 3-level hierarchical statistics (Kingdom ➔ Phylum ➔ Class)
-        kingdom = info.get("kingdom") or "Unknown_Kingdom"
-        phylum = info.get("phylum") or "Unknown_Phylum"
-        klass = info.get("class") or "Unknown_Class"
+        # Resolve 6-level taxonomy definitions for unclassified check
+        kingdom = info.get("kingdom")
+        phylum = info.get("phylum")
+        klass = info.get("class")
+        order = info.get("order")
+        family = info.get("family")
+        genus = info.get("genus")
 
-        if kingdom not in tax_summary:
-            tax_summary[kingdom] = {"total": 0, "completed": 0, "phyla": {}}
-        
-        tax_summary[kingdom]["total"] += 1
-        if ncbi_status == "completed":
-            tax_summary[kingdom]["completed"] += 1
+        ranks = [kingdom, phylum, klass, order, family, genus]
+        missing_count = sum(1 for r in ranks if not r)
 
-        phyla_dict = tax_summary[kingdom]["phyla"]
-        if phylum not in phyla_dict:
-            phyla_dict[phylum] = {"total": 0, "completed": 0, "classes": {}}
-        
-        phyla_dict[phylum]["total"] += 1
-        if ncbi_status == "completed":
-            phyla_dict[phylum]["completed"] += 1
+        # Smart Unclassified Check: Both Kingdom and Phylum are missing, or >= 4 ranks are missing
+        if (not kingdom and not phylum) or missing_count >= 4:
+            unclassified_count += 1
+            continue
 
-        classes_dict = phyla_dict[phylum]["classes"]
-        if klass not in classes_dict:
-            classes_dict[klass] = {"total": 0, "completed": 0}
+        # 3-level hierarchical statistics for standard classified taxons (Kingdom ➔ Phylum ➔ Class)
+        kingdom_name = kingdom or "Unknown_Kingdom"
+        phylum_name = phylum or "Unknown_Phylum"
+        klass_name = klass or "Unknown_Class"
+
+        if kingdom_name not in tax_summary:
+            tax_summary[kingdom_name] = {"total": 0, "completed": 0, "phyla": {}}
         
-        classes_dict[klass]["total"] += 1
+        tax_summary[kingdom_name]["total"] += 1
         if ncbi_status == "completed":
-            classes_dict[klass]["completed"] += 1
+            tax_summary[kingdom_name]["completed"] += 1
+
+        phyla_dict = tax_summary[kingdom_name]["phyla"]
+        if phylum_name not in phyla_dict:
+            phyla_dict[phylum_name] = {"total": 0, "completed": 0, "classes": {}}
+        
+        phyla_dict[phylum_name]["total"] += 1
+        if ncbi_status == "completed":
+            phyla_dict[phylum_name]["completed"] += 1
+
+        classes_dict = phyla_dict[phylum_name]["classes"]
+        if klass_name not in classes_dict:
+            classes_dict[klass_name] = {"total": 0, "completed": 0}
+        
+        classes_dict[klass_name]["total"] += 1
+        if ncbi_status == "completed":
+            classes_dict[klass_name]["completed"] += 1
 
     # Format Overview Report
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -120,7 +138,8 @@ def generate_overview_report(db_manager, overview_path):
     lines.append(f"  - Completed NCBI Downloads     : {ncbi_completed}")
     lines.append(f"  - Failed NCBI Downloads        : {ncbi_failed}")
     lines.append(f"  - Pending NCBI Downloads       : {ncbi_pending}")
-    lines.append(f"  - Genomes Without NCBI Ann     : {ncbi_unannotated_total}  (Target for Custom Annotation)\n")
+    lines.append(f"  - Genomes Without NCBI Ann     : {ncbi_unannotated_total}  (Target for Custom Annotation)")
+    lines.append(f"  - Unclassified Genomes (Flat)  : {unclassified_count}  (Located in taxonomy/Unclassified/)\n")
 
     lines.append("[Custom Pipeline Re-annotation Statistics]")
     lines.append(f"  - Completed Custom Annotations : {custom_completed}")
